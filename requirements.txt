@@ -1,0 +1,12 @@
+pdfplumber
+sentence-transformers
+faiss-cpu
+numpy
+pydantic>=2.6
+pydantic-settings>=2.2
+PyYAML>=6.0
+fastapi>=0.111
+uvicorn>=0.30
+python-multipart>=0.0.9
+streamlit>=1.35
+requests>=2.31
