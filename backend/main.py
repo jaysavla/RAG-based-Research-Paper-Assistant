@@ -11,6 +11,7 @@ import re
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer, CrossEncoder
+from rank_bm25 import BM25Okapi
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
@@ -42,6 +43,10 @@ DOCUMENT_STORE: Dict[str, Dict] = {}
 # Stores (filename, chunk_id) so we can trace back any result
 GLOBAL_INDEX = None
 GLOBAL_CHUNK_MAP: List[Dict] = []  # [{filename, chunk_id, text, pages}, ...]
+
+# BM25 index (keyword search) — parallel to GLOBAL_CHUNK_MAP
+BM25_INDEX: Optional[BM25Okapi] = None
+BM25_CORPUS: List[List[str]] = []   # tokenised texts
 
 # Gold evaluation set: [{question, filename, chunk_id, source_text}, ...]
 EVAL_SET: List[Dict] = []
@@ -120,6 +125,7 @@ def load_store() -> None:
                 "chunks": chunks, "embeddings": embeddings, "index": index
             }
 
+    rebuild_bm25_index()
     print(f"[PERSIST] Loaded {len(DOCUMENT_STORE)} doc(s), {GLOBAL_INDEX.ntotal} vectors.")
 
 
@@ -248,7 +254,28 @@ def rebuild_global_index():
     GLOBAL_INDEX = faiss.IndexFlatIP(dim)
     GLOBAL_INDEX.add(merged)
     print(f"[FAISS] Global index rebuilt: {GLOBAL_INDEX.ntotal} vectors from {len(DOCUMENT_STORE)} doc(s)")
+    rebuild_bm25_index()
     save_store()
+
+
+def rebuild_bm25_index() -> None:
+    """Build BM25 keyword index over the same corpus as GLOBAL_CHUNK_MAP."""
+    global BM25_INDEX, BM25_CORPUS
+    if not GLOBAL_CHUNK_MAP:
+        return
+    BM25_CORPUS = [c["text"].lower().split() for c in GLOBAL_CHUNK_MAP]
+    BM25_INDEX  = BM25Okapi(BM25_CORPUS)
+    print(f"[BM25] Index built: {len(BM25_CORPUS)} documents")
+
+
+def _rrf_merge(list1: List[int], list2: List[int], k: int, rrf_k: int = 60) -> List[int]:
+    """Reciprocal Rank Fusion — combine two ranked lists into one."""
+    scores: Dict[int, float] = {}
+    for rank, idx in enumerate(list1):
+        scores[idx] = scores.get(idx, 0.0) + 1.0 / (rrf_k + rank + 1)
+    for rank, idx in enumerate(list2):
+        scores[idx] = scores.get(idx, 0.0) + 1.0 / (rrf_k + rank + 1)
+    return sorted(scores, key=lambda x: scores[x], reverse=True)[:k]
 
 
 @app.on_event("startup")
@@ -564,26 +591,27 @@ Question: {req.query}
 
 
 def _retrieve_and_build_prompt(query: str, top_k: int):
-    """Shared retrieval + prompt builder used by both /ask and /ask/stream."""
-    faiss_k = min(top_k * 3, GLOBAL_INDEX.ntotal)
-    q_vec = EMBED_MODEL.encode([query], show_progress_bar=False).astype(np.float32)
-    faiss.normalize_L2(q_vec)
-    scores, indices = GLOBAL_INDEX.search(q_vec, faiss_k)
+    """Shared retrieval + prompt builder: hybrid BM25+FAISS → RRF → rerank."""
+    pool = min(top_k * 3, GLOBAL_INDEX.ntotal)
 
-    candidates = []
-    for idx, score in zip(indices[0], scores[0]):
-        if idx == -1:
-            continue
+    # Dense candidates
+    faiss_idxs  = _faiss_only(query, pool)
+
+    # Keyword candidates
+    tokens      = query.lower().split()
+    bm25_scores = BM25_INDEX.get_scores(tokens)
+    bm25_idxs   = list(np.argsort(bm25_scores)[::-1][:pool])
+
+    # RRF merge then cross-encoder rerank
+    merged      = _rrf_merge(faiss_idxs, bm25_idxs, pool)
+    pairs       = [[query, GLOBAL_CHUNK_MAP[i]["text"]] for i in merged]
+    ce_scores   = RERANKER.predict(pairs)
+    ranked      = sorted(zip(merged, ce_scores), key=lambda x: x[1], reverse=True)[:top_k]
+
+    retrieved = []
+    for idx, ce_score in ranked:
         chunk = GLOBAL_CHUNK_MAP[idx]
-        candidates.append({**chunk, "faiss_score": round(float(score), 4)})
-
-    pairs = [[query, c["text"]] for c in candidates]
-    ce_scores = RERANKER.predict(pairs)
-    for c, ce_score in zip(candidates, ce_scores):
-        c["rerank_score"] = round(float(ce_score), 4)
-
-    candidates.sort(key=lambda x: x["rerank_score"], reverse=True)
-    retrieved = candidates[:top_k]
+        retrieved.append({**chunk, "rerank_score": round(float(ce_score), 4)})
 
     context_lines = []
     for i, r in enumerate(retrieved):
@@ -613,7 +641,7 @@ Question: {query}
 """
     sources = [
         {"label": f"[{i+1}]", "filename": r["filename"], "pages": r["pages"],
-         "faiss_score": r["faiss_score"], "rerank_score": r["rerank_score"]}
+         "rerank_score": r["rerank_score"]}
         for i, r in enumerate(retrieved)
     ]
     return prompt, sources
@@ -667,6 +695,28 @@ def _faiss_then_rerank(query: str, k: int) -> List[int]:
     pairs = [[query, GLOBAL_CHUNK_MAP[i]["text"]] for i in candidates]
     ce_scores = RERANKER.predict(pairs)
     ranked = sorted(zip(candidates, ce_scores), key=lambda x: x[1], reverse=True)
+    return [idx for idx, _ in ranked[:k]]
+
+
+def _hybrid_then_rerank(query: str, k: int) -> List[int]:
+    """BM25 + FAISS → RRF merge → cross-encoder re-ranking."""
+    pool = min(k * 3, GLOBAL_INDEX.ntotal)
+
+    # Dense candidates
+    faiss_idxs = _faiss_only(query, pool)
+
+    # Keyword candidates
+    tokens     = query.lower().split()
+    bm25_scores = BM25_INDEX.get_scores(tokens)
+    bm25_idxs  = list(np.argsort(bm25_scores)[::-1][:pool])
+
+    # RRF merge
+    merged = _rrf_merge(faiss_idxs, bm25_idxs, pool)
+
+    # Cross-encoder re-ranking on merged pool
+    pairs     = [[query, GLOBAL_CHUNK_MAP[i]["text"]] for i in merged]
+    ce_scores = RERANKER.predict(pairs)
+    ranked    = sorted(zip(merged, ce_scores), key=lambda x: x[1], reverse=True)
     return [idx for idx, _ in ranked[:k]]
 
 
@@ -735,46 +785,48 @@ def run_evaluation(req: EvalRunRequest):
         return {"error": "Eval set is empty. Call /generate-eval-set first."}
 
     k = req.k
-    faiss_hits, rerank_hits = [], []
-    faiss_rr, rerank_rr = [], []
+    faiss_hits, rerank_hits, hybrid_hits = [], [], []
+    faiss_rr,   rerank_rr,   hybrid_rr   = [], [], []
     details = []
 
     for item in EVAL_SET:
-        # Find the correct chunk's position in the global map
         correct_global_idx: Optional[int] = next(
             (i for i, c in enumerate(GLOBAL_CHUNK_MAP)
              if c["filename"] == item["filename"] and c["chunk_id"] == item["chunk_id"]),
             None,
         )
         if correct_global_idx is None:
-            print(f"[EVAL] Skipping — chunk not found in global map: {item['filename']} #{item['chunk_id']}")
+            print(f"[EVAL] Skipping — chunk not found: {item['filename']} #{item['chunk_id']}")
             continue
 
         f_results = _faiss_only(item["question"], k)
         r_results = _faiss_then_rerank(item["question"], k)
+        h_results = _hybrid_then_rerank(item["question"], k)
 
         f_hit = int(correct_global_idx in f_results)
         r_hit = int(correct_global_idx in r_results)
-        faiss_hits.append(f_hit)
-        rerank_hits.append(r_hit)
+        h_hit = int(correct_global_idx in h_results)
+        faiss_hits.append(f_hit);  rerank_hits.append(r_hit);  hybrid_hits.append(h_hit)
 
         f_rank = f_results.index(correct_global_idx) + 1 if f_hit else None
         r_rank = r_results.index(correct_global_idx) + 1 if r_hit else None
+        h_rank = h_results.index(correct_global_idx) + 1 if h_hit else None
         faiss_rr.append(1.0 / f_rank if f_rank else 0.0)
         rerank_rr.append(1.0 / r_rank if r_rank else 0.0)
+        hybrid_rr.append(1.0 / h_rank if h_rank else 0.0)
 
         details.append({
             "question": item["question"],
             "filename": item["filename"],
             "correct_chunk_id": item["chunk_id"],
-            "faiss_hit": bool(f_hit),
-            "rerank_hit": bool(r_hit),
-            "faiss_rank": f_rank,
-            "rerank_rank": r_rank,
+            "faiss_hit": bool(f_hit),   "faiss_rank": f_rank,
+            "rerank_hit": bool(r_hit),  "rerank_rank": r_rank,
+            "hybrid_hit": bool(h_hit),  "hybrid_rank": h_rank,
         })
         print(
-            f"[EVAL] FAISS hit={f_hit} rank={f_rank} | Rerank hit={r_hit} rank={r_rank} | "
-            f"'{item['question'][:55]}'"
+            f"[EVAL] FAISS hit={f_hit} rank={f_rank} | "
+            f"Rerank hit={r_hit} rank={r_rank} | "
+            f"Hybrid hit={h_hit} rank={h_rank} | '{item['question'][:50]}'"
         )
 
     n = len(faiss_hits)
@@ -786,9 +838,9 @@ def run_evaluation(req: EvalRunRequest):
         "num_questions": n,
         "faiss_recall_at_k":  round(sum(faiss_hits)  / n, 4),
         "rerank_recall_at_k": round(sum(rerank_hits) / n, 4),
+        "hybrid_recall_at_k": round(sum(hybrid_hits) / n, 4),
         "faiss_mrr":          round(sum(faiss_rr)    / n, 4),
         "rerank_mrr":         round(sum(rerank_rr)   / n, 4),
-        "recall_improvement": round((sum(rerank_hits) - sum(faiss_hits)) / n, 4),
-        "mrr_improvement":    round((sum(rerank_rr)   - sum(faiss_rr))   / n, 4),
+        "hybrid_mrr":         round(sum(hybrid_rr)   / n, 4),
         "details": details,
     }

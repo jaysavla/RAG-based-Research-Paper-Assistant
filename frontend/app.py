@@ -165,8 +165,7 @@ if ask_clicked and query.strip():
             if chunk.startswith("__SOURCES__:"):
                 sources = json.loads(chunk[len("__SOURCES__:"):].strip())
                 lines = [
-                    f"{s['label']} **{s['filename']}** — pages {s['pages']} | "
-                    f"rerank: {s['rerank_score']} | faiss: {s['faiss_score']}"
+                    f"{s['label']} **{s['filename']}** — pages {s['pages']} | rerank: {s['rerank_score']}"
                     for s in sources
                 ]
                 sources_box.info("**Sources retrieved:**\n\n" + "\n\n".join(lines))
@@ -224,24 +223,30 @@ with st.expander("Retrieval Evaluation (Recall@k & MRR)", expanded=False):
         else:
             st.subheader(f"Results — {edata['num_questions']} questions, k={edata['k']}")
 
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric(f"FAISS Recall@{edata['k']}",  edata["faiss_recall_at_k"])
-            col2.metric(f"Rerank Recall@{edata['k']}", edata["rerank_recall_at_k"],
-                        delta=round(edata["recall_improvement"], 4))
-            col3.metric("FAISS MRR",  edata["faiss_mrr"])
-            col4.metric("Rerank MRR", edata["rerank_mrr"],
-                        delta=round(edata["mrr_improvement"], 4))
+            c1, c2, c3 = st.columns(3)
+            c1.metric(f"FAISS Recall@{edata['k']}",   edata["faiss_recall_at_k"])
+            c2.metric(f"Rerank Recall@{edata['k']}",  edata["rerank_recall_at_k"],
+                      delta=round(edata["rerank_recall_at_k"] - edata["faiss_recall_at_k"], 4))
+            c3.metric(f"Hybrid Recall@{edata['k']}",  edata["hybrid_recall_at_k"],
+                      delta=round(edata["hybrid_recall_at_k"] - edata["faiss_recall_at_k"], 4))
+
+            c4, c5, c6 = st.columns(3)
+            c4.metric("FAISS MRR",  edata["faiss_mrr"])
+            c5.metric("Rerank MRR", edata["rerank_mrr"],
+                      delta=round(edata["rerank_mrr"] - edata["faiss_mrr"], 4))
+            c6.metric("Hybrid MRR", edata["hybrid_mrr"],
+                      delta=round(edata["hybrid_mrr"] - edata["faiss_mrr"], 4))
 
             st.divider()
             st.caption("**Per-question breakdown:**")
             for d in edata["details"]:
-                faiss_icon  = "✅" if d["faiss_hit"]  else "❌"
-                rerank_icon = "✅" if d["rerank_hit"] else "❌"
-                rank_info = (
-                    f"FAISS rank {d['faiss_rank'] or '—'} → Rerank rank {d['rerank_rank'] or '—'}"
-                )
+                fi = "✅" if d["faiss_hit"]  else "❌"
+                ri = "✅" if d["rerank_hit"] else "❌"
+                hi = "✅" if d["hybrid_hit"] else "❌"
                 st.markdown(
-                    f"{faiss_icon}→{rerank_icon} **{d['filename']}** chunk {d['correct_chunk_id']} | "
-                    f"{rank_info}"
+                    f"FAISS {fi} rank {d['faiss_rank'] or '—'} → "
+                    f"Rerank {ri} rank {d['rerank_rank'] or '—'} → "
+                    f"Hybrid {hi} rank {d['hybrid_rank'] or '—'} | "
+                    f"**{d['filename']}** chunk {d['correct_chunk_id']}"
                 )
                 st.caption(d["question"])
