@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Form
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import random
@@ -560,6 +561,90 @@ Question: {req.query}
             for i, r in enumerate(retrieved)
         ],
     }
+
+
+def _retrieve_and_build_prompt(query: str, top_k: int):
+    """Shared retrieval + prompt builder used by both /ask and /ask/stream."""
+    faiss_k = min(top_k * 3, GLOBAL_INDEX.ntotal)
+    q_vec = EMBED_MODEL.encode([query], show_progress_bar=False).astype(np.float32)
+    faiss.normalize_L2(q_vec)
+    scores, indices = GLOBAL_INDEX.search(q_vec, faiss_k)
+
+    candidates = []
+    for idx, score in zip(indices[0], scores[0]):
+        if idx == -1:
+            continue
+        chunk = GLOBAL_CHUNK_MAP[idx]
+        candidates.append({**chunk, "faiss_score": round(float(score), 4)})
+
+    pairs = [[query, c["text"]] for c in candidates]
+    ce_scores = RERANKER.predict(pairs)
+    for c, ce_score in zip(candidates, ce_scores):
+        c["rerank_score"] = round(float(ce_score), 4)
+
+    candidates.sort(key=lambda x: x["rerank_score"], reverse=True)
+    retrieved = candidates[:top_k]
+
+    context_lines = []
+    for i, r in enumerate(retrieved):
+        context_lines.append(f"[{i+1}] Source: {r['filename']}, pages {r['pages']}\n{r['text']}")
+    context_block = "\n\n".join(context_lines)
+
+    prompt = f"""You are a research assistant. Using ONLY the context below, answer the user's question.
+
+Your response MUST follow this exact structure:
+
+## Summary
+A concise answer to the question based on the sources.
+
+## Comparison
+How the different sources agree or differ on this topic (skip if only one source).
+
+## Citations
+List each source you used, with its label, filename, and page numbers.
+Example: [1] paper.pdf, pages [3, 4]
+
+---
+Context:
+{context_block}
+
+---
+Question: {query}
+"""
+    sources = [
+        {"label": f"[{i+1}]", "filename": r["filename"], "pages": r["pages"],
+         "faiss_score": r["faiss_score"], "rerank_score": r["rerank_score"]}
+        for i, r in enumerate(retrieved)
+    ]
+    return prompt, sources
+
+
+@app.post("/ask/stream")
+def ask_stream(req: AskRequest):
+    if GLOBAL_INDEX is None or GLOBAL_INDEX.ntotal == 0:
+        def _error():
+            yield "No documents uploaded yet. Please upload PDFs first."
+        return StreamingResponse(_error(), media_type="text/plain")
+
+    prompt, sources = _retrieve_and_build_prompt(req.query, req.top_k)
+    print(f"[ASK/STREAM] '{req.query}' | {len(sources)} sources")
+
+    def generate():
+        # First line: sources metadata as JSON so frontend can parse it
+        yield f"__SOURCES__:{json.dumps(sources)}\n"
+
+        stream = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            stream=True,
+        )
+        for chunk in stream:
+            token = chunk.choices[0].delta.content
+            if token:
+                yield token
+
+    return StreamingResponse(generate(), media_type="text/plain")
 
 
 # ── Evaluation helpers ────────────────────────────────────────────────────────

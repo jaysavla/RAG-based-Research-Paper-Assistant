@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import time
+import json
 
 BACKEND_URL = "http://127.0.0.1:8000"
 
@@ -143,29 +144,40 @@ if search_clicked and query.strip():
                 st.write(res["text"])
 
 if ask_clicked and query.strip():
-    with st.spinner("Retrieving context and generating answer..."):
-        try:
+    sources_box  = st.empty()   # filled once sources arrive
+    answer_box   = st.empty()   # updated token-by-token
+    full_answer  = ""
+    sources      = None
+
+    try:
+        with st.spinner("Retrieving and re-ranking context..."):
             response = requests.post(
-                f"{BACKEND_URL}/ask",
+                f"{BACKEND_URL}/ask/stream",
                 json={"query": query, "top_k": top_k},
+                stream=True,
+                timeout=120,
             )
             response.raise_for_status()
-            data = response.json()
-        except requests.exceptions.ConnectionError:
-            st.error("Cannot connect to backend. Make sure it is running on port 8000.")
-            st.stop()
-        except Exception as e:
-            st.error(f"Error: {e}")
-            st.stop()
 
-    if "error" in data:
-        st.warning(data["error"])
-    else:
-        st.markdown(data["answer"])
-        st.divider()
-        st.caption("**Sources used:**")
-        for src in data["sources"]:
-            st.caption(f"{src['label']} {src['filename']} — pages {src['pages']} | rerank: {src['rerank_score']} | faiss: {src['faiss_score']}")
+        for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+            if not chunk:
+                continue
+            if chunk.startswith("__SOURCES__:"):
+                sources = json.loads(chunk[len("__SOURCES__:"):].strip())
+                lines = [
+                    f"{s['label']} **{s['filename']}** — pages {s['pages']} | "
+                    f"rerank: {s['rerank_score']} | faiss: {s['faiss_score']}"
+                    for s in sources
+                ]
+                sources_box.info("**Sources retrieved:**\n\n" + "\n\n".join(lines))
+            else:
+                full_answer += chunk
+                answer_box.markdown(full_answer)
+
+    except requests.exceptions.ConnectionError:
+        st.error("Cannot connect to backend. Make sure it is running on port 8000.")
+    except Exception as e:
+        st.error(f"Streaming error: {e}")
 
 # ── Evaluation section ────────────────────────────────────────────────────────
 st.divider()
