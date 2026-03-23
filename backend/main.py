@@ -7,6 +7,12 @@ import re
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
+from openai import OpenAI
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI(title="RAG Research Assistant")
 
@@ -223,3 +229,77 @@ def query_documents(req: QueryRequest):
         print(f"  #{rank+1} score={score:.4f} | {chunk['filename']} chunk {chunk['chunk_id']} pages {chunk['pages']}")
 
     return {"query": req.query, "top_k": req.top_k, "results": results}
+
+
+class AskRequest(BaseModel):
+    query: str
+    top_k: int = 8
+
+
+@app.post("/ask")
+def ask_documents(req: AskRequest):
+    if GLOBAL_INDEX is None or GLOBAL_INDEX.ntotal == 0:
+        return {"error": "No documents uploaded yet. Please upload PDFs first."}
+
+    # Retrieve top-k chunks
+    query_vec = EMBED_MODEL.encode([req.query], show_progress_bar=False).astype(np.float32)
+    faiss.normalize_L2(query_vec)
+    scores, indices = GLOBAL_INDEX.search(query_vec, req.top_k)
+
+    retrieved = []
+    for idx, score in zip(indices[0], scores[0]):
+        if idx == -1:
+            continue
+        chunk = GLOBAL_CHUNK_MAP[idx]
+        retrieved.append({**chunk, "score": round(float(score), 4)})
+
+    # Build context block with citation labels [1], [2], ...
+    context_lines = []
+    for i, r in enumerate(retrieved):
+        label = f"[{i+1}]"
+        context_lines.append(
+            f"{label} Source: {r['filename']}, pages {r['pages']}\n{r['text']}"
+        )
+    context_block = "\n\n".join(context_lines)
+
+    print(f"[ASK] '{req.query}' | {len(retrieved)} chunks sent to LLM")
+
+    prompt = f"""You are a research assistant. Using ONLY the context below, answer the user's question.
+
+Your response MUST follow this exact structure:
+
+## Summary
+A concise answer to the question based on the sources.
+
+## Comparison
+How the different sources agree or differ on this topic (skip if only one source).
+
+## Citations
+List each source you used, with its label, filename, and page numbers.
+Example: [1] paper.pdf, pages [3, 4]
+
+---
+Context:
+{context_block}
+
+---
+Question: {req.query}
+"""
+
+    response = openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+    )
+
+    answer = response.choices[0].message.content
+    print(f"[ASK] LLM response received ({len(answer)} chars)")
+
+    return {
+        "query": req.query,
+        "answer": answer,
+        "sources": [
+            {"label": f"[{i+1}]", "filename": r["filename"], "pages": r["pages"], "score": r["score"]}
+            for i, r in enumerate(retrieved)
+        ],
+    }
