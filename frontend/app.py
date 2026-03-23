@@ -15,7 +15,7 @@ uploaded_files = st.file_uploader(
 
 if uploaded_files:
     if st.button("Process PDFs"):
-        with st.spinner("Uploading and chunking text..."):
+        with st.spinner("Uploading, chunking and embedding text (first run downloads model ~90MB)..."):
             files = [
                 ("files", (f.name, f.read(), "application/pdf"))
                 for f in uploaded_files
@@ -38,9 +38,11 @@ if uploaded_files:
             st.subheader(file_info["filename"])
 
             col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             col1.metric("Pages", file_info["num_pages"])
             col2.metric("Characters", f"{file_info['text_length']:,}")
             col3.metric("Chunks", file_info.get("num_chunks", "—"))
+            col4.metric("Embed dim", file_info.get("embed_dim", "—"))
 
             with st.expander("Preview chunks"):
                 for chunk in file_info.get("chunks", [])[:5]:
