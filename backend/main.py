@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Form
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import random
@@ -21,6 +21,11 @@ app = FastAPI(title="RAG Research Assistant")
 CHUNK_SIZE = 200   # target words per chunk
 CHUNK_OVERLAP = 50 # words of overlap between chunks
 
+MAX_FILE_MB       = 50
+MAX_FILE_BYTES    = MAX_FILE_MB * 1024 * 1024
+MIN_TEXT_CHARS    = 200   # below this → likely image-only or nearly blank
+PDF_MAGIC         = b"%PDF"
+
 # Load models once at startup — not per request
 print("[STARTUP] Loading embedding model...")
 EMBED_MODEL = SentenceTransformer("allenai/specter")
@@ -41,6 +46,17 @@ EVAL_SET: List[Dict] = []
 
 # Upload jobs: job_id -> {status, progress, files, result, error}
 JOBS: Dict[str, Dict] = {}
+
+
+def validate_file(content: bytes) -> Optional[str]:
+    """Return an error string if the file should be rejected, else None."""
+    if len(content) == 0:
+        return "File is empty (0 bytes)."
+    if len(content) > MAX_FILE_BYTES:
+        return f"File exceeds {MAX_FILE_MB} MB limit ({len(content) // (1024*1024)} MB)."
+    if not content.startswith(PDF_MAGIC):
+        return "File does not appear to be a valid PDF (missing %PDF header)."
+    return None
 
 
 def extract_text_by_page(pdf_bytes: io.BytesIO) -> List[Dict]:
@@ -164,24 +180,90 @@ def root():
     return {"status": "ok", "message": "RAG backend is running"}
 
 
-def _process_upload(job_id: str, file_payloads: List[Dict]):
+def _process_upload(job_id: str, file_payloads: List[Dict], overwrite: bool = False):
     """Background task: extract → chunk → embed → index. Updates JOBS[job_id] throughout."""
     job = JOBS[job_id]
     results = []
+    processed = 0
 
     try:
         for payload in file_payloads:
             filename = payload["filename"]
             content  = payload["content"]
+            warnings = []
+            file_status = "ok"
 
+            # ── Duplicate check ───────────────────────────────────────────────
+            if filename in DOCUMENT_STORE and not overwrite:
+                print(f"[JOB {job_id}] Skipping duplicate: '{filename}'")
+                results.append({
+                    "filename": filename,
+                    "status": "skipped",
+                    "skip_reason": "Already uploaded. Enable overwrite to re-process.",
+                    "warnings": [],
+                })
+                continue
+
+            # ── Extract text ──────────────────────────────────────────────────
             job["progress"] = f"Extracting text: {filename}"
-            print(f"[JOB {job_id}] Extracting '{filename}'")
-            pages = extract_text_by_page(io.BytesIO(content))
-            num_pages = len(pages)
+            try:
+                pages = extract_text_by_page(io.BytesIO(content))
+            except Exception as exc:
+                err = str(exc).lower()
+                reason = (
+                    "PDF is password-protected." if "password" in err or "encrypt" in err
+                    else f"Could not parse PDF: {exc}"
+                )
+                print(f"[JOB {job_id}] Skipping '{filename}': {reason}")
+                results.append({
+                    "filename": filename,
+                    "status": "skipped",
+                    "skip_reason": reason,
+                    "warnings": [],
+                })
+                continue
+
+            num_pages_total = len(pages)
+
+            # ── Image-only / scanned detection ────────────────────────────────
+            if num_pages_total == 0:
+                print(f"[JOB {job_id}] Skipping '{filename}': no extractable text (image-only or scanned)")
+                results.append({
+                    "filename": filename,
+                    "status": "skipped",
+                    "skip_reason": "No text could be extracted. This PDF may be image-only or scanned.",
+                    "warnings": [],
+                })
+                continue
+
             full_text_length = sum(len(p["text"]) for p in pages)
 
-            chunks = split_into_chunks(pages)
+            # ── Insufficient text warning ─────────────────────────────────────
+            if full_text_length < MIN_TEXT_CHARS:
+                warnings.append(
+                    f"Very little text extracted ({full_text_length} chars). "
+                    "Results may be poor — check if the PDF is mostly images."
+                )
+                file_status = "warning"
 
+            # ── Blank-page warning ────────────────────────────────────────────
+            with pdfplumber.open(io.BytesIO(content)) as pdf:
+                total_pdf_pages = len(pdf.pages)
+            blank_pages = total_pdf_pages - num_pages_total
+            if blank_pages > 0:
+                warnings.append(f"{blank_pages} page(s) had no extractable text and were skipped.")
+
+            chunks = split_into_chunks(pages)
+            if not chunks:
+                results.append({
+                    "filename": filename,
+                    "status": "skipped",
+                    "skip_reason": "Chunking produced no output — document may be too short.",
+                    "warnings": warnings,
+                })
+                continue
+
+            # ── Embed & index ─────────────────────────────────────────────────
             job["progress"] = f"Embedding {len(chunks)} chunks: {filename}"
             print(f"[JOB {job_id}] Embedding {len(chunks)} chunks for '{filename}'")
             embeddings = embed_chunks(chunks)
@@ -189,16 +271,15 @@ def _process_upload(job_id: str, file_payloads: List[Dict]):
             job["progress"] = f"Building FAISS index: {filename}"
             index = build_faiss_index(embeddings)
 
-            DOCUMENT_STORE[filename] = {
-                "chunks": chunks,
-                "embeddings": embeddings,
-                "index": index,
-            }
+            DOCUMENT_STORE[filename] = {"chunks": chunks, "embeddings": embeddings, "index": index}
+            processed += 1
 
-            print(f"[JOB {job_id}] Done '{filename}' | pages={num_pages} chunks={len(chunks)}")
+            print(f"[JOB {job_id}] Done '{filename}' | pages={num_pages_total} chunks={len(chunks)} warnings={warnings}")
             results.append({
                 "filename": filename,
-                "num_pages": num_pages,
+                "status": file_status,
+                "warnings": warnings,
+                "num_pages": num_pages_total,
                 "text_length": full_text_length,
                 "num_chunks": len(chunks),
                 "embed_dim": int(embeddings.shape[1]),
@@ -211,8 +292,8 @@ def _process_upload(job_id: str, file_payloads: List[Dict]):
 
         job["status"]   = "done"
         job["progress"] = "Complete"
-        job["result"]   = {"uploaded": len(results), "files": results}
-        print(f"[JOB {job_id}] Finished — {len(results)} file(s)")
+        job["result"]   = {"uploaded": processed, "files": results}
+        print(f"[JOB {job_id}] Finished — {processed} processed, {len(results) - processed} skipped")
 
     except Exception as exc:
         job["status"] = "failed"
@@ -221,30 +302,46 @@ def _process_upload(job_id: str, file_payloads: List[Dict]):
 
 
 @app.post("/upload")
-async def upload_pdfs(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
-    """Read file bytes immediately, return job_id, process in background."""
+async def upload_pdfs(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    overwrite: bool = Form(False),
+):
+    """Validate files immediately, return job_id, process in background."""
     job_id = str(uuid.uuid4())[:8]
 
     file_payloads = []
+    rejected = []
+
     for file in files:
         content = await file.read()
-        file_payloads.append({"filename": file.filename, "content": content})
+        error = validate_file(content)
+        if error:
+            rejected.append({"filename": file.filename, "reason": error})
+            print(f"[UPLOAD] Rejected '{file.filename}': {error}")
+        else:
+            file_payloads.append({"filename": file.filename, "content": content})
+
+    if not file_payloads:
+        return {"error": "All files were rejected.", "rejected": rejected}
 
     JOBS[job_id] = {
         "status":   "processing",
         "progress": "Queued",
         "files":    [f["filename"] for f in file_payloads],
+        "rejected": rejected,
         "result":   None,
         "error":    None,
     }
 
-    background_tasks.add_task(_process_upload, job_id, file_payloads)
-    print(f"[UPLOAD] Job {job_id} queued for {[f['filename'] for f in file_payloads]}")
+    background_tasks.add_task(_process_upload, job_id, file_payloads, overwrite)
+    print(f"[UPLOAD] Job {job_id} queued — {len(file_payloads)} valid, {len(rejected)} rejected")
 
     return {
-        "job_id":  job_id,
-        "status":  "processing",
-        "files":   [f["filename"] for f in file_payloads],
+        "job_id":   job_id,
+        "status":   "processing",
+        "files":    [f["filename"] for f in file_payloads],
+        "rejected": rejected,
         "poll_url": f"/upload/status/{job_id}",
     }
 

@@ -20,20 +20,36 @@ if "upload_result" not in st.session_state:
     st.session_state.upload_result = None
 
 if uploaded_files:
+    overwrite = st.checkbox("Overwrite if already uploaded", value=False)
     if st.button("Process PDFs"):
         files = [("files", (f.name, f.read(), "application/pdf")) for f in uploaded_files]
         try:
-            response = requests.post(f"{BACKEND_URL}/upload", files=files)
+            response = requests.post(
+                f"{BACKEND_URL}/upload",
+                files=files,
+                data={"overwrite": str(overwrite).lower()},
+            )
             response.raise_for_status()
             job_data = response.json()
-            st.session_state.job_id = job_data["job_id"]
-            st.session_state.upload_result = None
         except requests.exceptions.ConnectionError:
             st.error("Cannot connect to backend. Make sure it is running on port 8000.")
             st.stop()
         except Exception as e:
             st.error(f"Error: {e}")
             st.stop()
+
+        if "error" in job_data:
+            st.error(job_data["error"])
+            for r in job_data.get("rejected", []):
+                st.caption(f"❌ {r['filename']}: {r['reason']}")
+            st.stop()
+
+        if job_data.get("rejected"):
+            for r in job_data["rejected"]:
+                st.warning(f"❌ Rejected before queuing — **{r['filename']}**: {r['reason']}")
+
+        st.session_state.job_id = job_data["job_id"]
+        st.session_state.upload_result = None
 
 # ── Poll until done ───────────────────────────────────────────────────────────
 if st.session_state.job_id and st.session_state.upload_result is None:
@@ -62,7 +78,17 @@ if st.session_state.upload_result:
     st.divider()
 
     for file_info in data["files"]:
+        status = file_info.get("status", "ok")
+
+        if status == "skipped":
+            st.warning(f"⏭️ **{file_info['filename']}** — skipped: {file_info.get('skip_reason', '')}")
+            continue
+
         st.subheader(file_info["filename"])
+
+        if status == "warning":
+            for w in file_info.get("warnings", []):
+                st.warning(f"⚠️ {w}")
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Pages", file_info["num_pages"])
