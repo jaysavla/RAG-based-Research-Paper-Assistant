@@ -114,3 +114,70 @@ if ask_clicked and query.strip():
         st.caption("**Sources used:**")
         for src in data["sources"]:
             st.caption(f"{src['label']} {src['filename']} — pages {src['pages']} | rerank: {src['rerank_score']} | faiss: {src['faiss_score']}")
+
+# ── Evaluation section ────────────────────────────────────────────────────────
+st.divider()
+with st.expander("Retrieval Evaluation (Recall@k & MRR)", expanded=False):
+    st.caption("Generate a gold question set from your uploaded papers, then measure FAISS vs Re-ranking quality.")
+
+    samples = st.slider("Questions per document", min_value=2, max_value=10, value=5)
+    eval_k  = st.slider("k (top-k to evaluate)", min_value=1, max_value=10, value=5)
+
+    col_gen, col_run = st.columns(2)
+    gen_clicked = col_gen.button("Generate Eval Set", use_container_width=True)
+    run_clicked = col_run.button("Run Evaluation", use_container_width=True)
+
+    if gen_clicked:
+        with st.spinner("Generating questions via GPT..."):
+            try:
+                r = requests.post(f"{BACKEND_URL}/generate-eval-set", json={"samples_per_doc": samples})
+                r.raise_for_status()
+                gdata = r.json()
+            except Exception as e:
+                st.error(f"Error: {e}")
+                st.stop()
+
+        if "error" in gdata:
+            st.warning(gdata["error"])
+        else:
+            st.success(f"Generated {gdata['eval_set_size']} questions")
+            for q in gdata["questions"]:
+                st.markdown(f"- **{q['filename']} chunk {q['chunk_id']}:** {q['question']}")
+                st.caption(f"Source: {q['source_text'][:200]}...")
+
+    if run_clicked:
+        with st.spinner("Running retrieval evaluation..."):
+            try:
+                r = requests.post(f"{BACKEND_URL}/evaluate", json={"k": eval_k})
+                r.raise_for_status()
+                edata = r.json()
+            except Exception as e:
+                st.error(f"Error: {e}")
+                st.stop()
+
+        if "error" in edata:
+            st.warning(edata["error"])
+        else:
+            st.subheader(f"Results — {edata['num_questions']} questions, k={edata['k']}")
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric(f"FAISS Recall@{edata['k']}",  edata["faiss_recall_at_k"])
+            col2.metric(f"Rerank Recall@{edata['k']}", edata["rerank_recall_at_k"],
+                        delta=round(edata["recall_improvement"], 4))
+            col3.metric("FAISS MRR",  edata["faiss_mrr"])
+            col4.metric("Rerank MRR", edata["rerank_mrr"],
+                        delta=round(edata["mrr_improvement"], 4))
+
+            st.divider()
+            st.caption("**Per-question breakdown:**")
+            for d in edata["details"]:
+                faiss_icon  = "✅" if d["faiss_hit"]  else "❌"
+                rerank_icon = "✅" if d["rerank_hit"] else "❌"
+                rank_info = (
+                    f"FAISS rank {d['faiss_rank'] or '—'} → Rerank rank {d['rerank_rank'] or '—'}"
+                )
+                st.markdown(
+                    f"{faiss_icon}→{rerank_icon} **{d['filename']}** chunk {d['correct_chunk_id']} | "
+                    f"{rank_info}"
+                )
+                st.caption(d["question"])

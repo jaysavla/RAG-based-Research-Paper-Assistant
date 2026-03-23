@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List, Dict, Optional
+import random
 import pdfplumber
 import io
 import re
@@ -33,6 +34,9 @@ DOCUMENT_STORE: Dict[str, Dict] = {}
 # Stores (filename, chunk_id) so we can trace back any result
 GLOBAL_INDEX = None
 GLOBAL_CHUNK_MAP: List[Dict] = []  # [{filename, chunk_id, text, pages}, ...]
+
+# Gold evaluation set: [{question, filename, chunk_id, source_text}, ...]
+EVAL_SET: List[Dict] = []
 
 
 def extract_text_by_page(pdf_bytes: io.BytesIO) -> List[Dict]:
@@ -316,4 +320,151 @@ Question: {req.query}
              "faiss_score": r["faiss_score"], "rerank_score": r["rerank_score"]}
             for i, r in enumerate(retrieved)
         ],
+    }
+
+
+# ── Evaluation helpers ────────────────────────────────────────────────────────
+
+def _faiss_only(query: str, k: int) -> List[int]:
+    """Return global CHUNK_MAP indices from FAISS search, no re-ranking."""
+    q_vec = EMBED_MODEL.encode([query], show_progress_bar=False).astype(np.float32)
+    faiss.normalize_L2(q_vec)
+    _, idxs = GLOBAL_INDEX.search(q_vec, k)
+    return [int(i) for i in idxs[0] if i != -1]
+
+
+def _faiss_then_rerank(query: str, k: int) -> List[int]:
+    """Return global CHUNK_MAP indices after FAISS + cross-encoder re-ranking."""
+    faiss_k = min(k * 3, GLOBAL_INDEX.ntotal)
+    q_vec = EMBED_MODEL.encode([query], show_progress_bar=False).astype(np.float32)
+    faiss.normalize_L2(q_vec)
+    _, idxs = GLOBAL_INDEX.search(q_vec, faiss_k)
+    candidates = [int(i) for i in idxs[0] if i != -1]
+    pairs = [[query, GLOBAL_CHUNK_MAP[i]["text"]] for i in candidates]
+    ce_scores = RERANKER.predict(pairs)
+    ranked = sorted(zip(candidates, ce_scores), key=lambda x: x[1], reverse=True)
+    return [idx for idx, _ in ranked[:k]]
+
+
+# ── Evaluation endpoints ──────────────────────────────────────────────────────
+
+class EvalGenRequest(BaseModel):
+    samples_per_doc: int = 5
+
+
+@app.post("/generate-eval-set")
+def generate_eval_set(req: EvalGenRequest):
+    """Sample chunks from each uploaded doc, ask GPT to generate one question per chunk."""
+    if not DOCUMENT_STORE:
+        return {"error": "No documents uploaded yet."}
+
+    global EVAL_SET
+    EVAL_SET = []
+
+    for filename, doc in DOCUMENT_STORE.items():
+        # Only use chunks with enough content
+        good_chunks = [c for c in doc["chunks"] if c["word_count"] >= 50]
+        if not good_chunks:
+            good_chunks = doc["chunks"]
+
+        # Spread samples evenly across the document
+        step = max(1, len(good_chunks) // req.samples_per_doc)
+        sampled = good_chunks[::step][: req.samples_per_doc]
+
+        for chunk in sampled:
+            prompt = (
+                "Read this passage from a research paper and write ONE specific question that:\n"
+                "1. Can ONLY be answered using this passage\n"
+                "2. Is NOT a yes/no question\n"
+                "3. Asks about a specific fact, method, result, or limitation\n\n"
+                f"Passage:\n{chunk['text'][:800]}\n\n"
+                "Respond with ONLY the question, nothing else."
+            )
+            resp = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+            question = resp.choices[0].message.content.strip()
+            EVAL_SET.append({
+                "question": question,
+                "filename": filename,
+                "chunk_id": chunk["chunk_id"],
+                "source_text": chunk["text"][:300],
+            })
+            print(f"[EVAL-GEN] '{question[:70]}' → {filename} chunk {chunk['chunk_id']}")
+
+    print(f"[EVAL-GEN] Gold set: {len(EVAL_SET)} questions across {len(DOCUMENT_STORE)} doc(s)")
+    return {"eval_set_size": len(EVAL_SET), "questions": EVAL_SET}
+
+
+class EvalRunRequest(BaseModel):
+    k: int = 5
+
+
+@app.post("/evaluate")
+def run_evaluation(req: EvalRunRequest):
+    """Run every gold question through FAISS-only and FAISS+Rerank. Report Recall@k and MRR."""
+    if GLOBAL_INDEX is None:
+        return {"error": "No documents uploaded yet."}
+    if not EVAL_SET:
+        return {"error": "Eval set is empty. Call /generate-eval-set first."}
+
+    k = req.k
+    faiss_hits, rerank_hits = [], []
+    faiss_rr, rerank_rr = [], []
+    details = []
+
+    for item in EVAL_SET:
+        # Find the correct chunk's position in the global map
+        correct_global_idx: Optional[int] = next(
+            (i for i, c in enumerate(GLOBAL_CHUNK_MAP)
+             if c["filename"] == item["filename"] and c["chunk_id"] == item["chunk_id"]),
+            None,
+        )
+        if correct_global_idx is None:
+            print(f"[EVAL] Skipping — chunk not found in global map: {item['filename']} #{item['chunk_id']}")
+            continue
+
+        f_results = _faiss_only(item["question"], k)
+        r_results = _faiss_then_rerank(item["question"], k)
+
+        f_hit = int(correct_global_idx in f_results)
+        r_hit = int(correct_global_idx in r_results)
+        faiss_hits.append(f_hit)
+        rerank_hits.append(r_hit)
+
+        f_rank = f_results.index(correct_global_idx) + 1 if f_hit else None
+        r_rank = r_results.index(correct_global_idx) + 1 if r_hit else None
+        faiss_rr.append(1.0 / f_rank if f_rank else 0.0)
+        rerank_rr.append(1.0 / r_rank if r_rank else 0.0)
+
+        details.append({
+            "question": item["question"],
+            "filename": item["filename"],
+            "correct_chunk_id": item["chunk_id"],
+            "faiss_hit": bool(f_hit),
+            "rerank_hit": bool(r_hit),
+            "faiss_rank": f_rank,
+            "rerank_rank": r_rank,
+        })
+        print(
+            f"[EVAL] FAISS hit={f_hit} rank={f_rank} | Rerank hit={r_hit} rank={r_rank} | "
+            f"'{item['question'][:55]}'"
+        )
+
+    n = len(faiss_hits)
+    if n == 0:
+        return {"error": "No valid eval items could be matched to the current index."}
+
+    return {
+        "k": k,
+        "num_questions": n,
+        "faiss_recall_at_k":  round(sum(faiss_hits)  / n, 4),
+        "rerank_recall_at_k": round(sum(rerank_hits) / n, 4),
+        "faiss_mrr":          round(sum(faiss_rr)    / n, 4),
+        "rerank_mrr":         round(sum(rerank_rr)   / n, 4),
+        "recall_improvement": round((sum(rerank_hits) - sum(faiss_hits)) / n, 4),
+        "mrr_improvement":    round((sum(rerank_rr)   - sum(faiss_rr))   / n, 4),
+        "details": details,
     }
