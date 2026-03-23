@@ -40,9 +40,9 @@ if uploaded_files:
             col1, col2, col3 = st.columns(3)
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Pages", file_info["num_pages"])
-            col2.metric("Characters", f"{file_info['text_length']:,}")
-            col3.metric("Chunks", file_info.get("num_chunks", "—"))
-            col4.metric("Embed dim", file_info.get("embed_dim", "—"))
+            col2.metric("Chunks", file_info.get("num_chunks", "—"))
+            col3.metric("Embed dim", file_info.get("embed_dim", "—"))
+            col4.metric("Vectors indexed", file_info.get("vectors_indexed", "—"))
 
             with st.expander("Preview chunks"):
                 for chunk in file_info.get("chunks", [])[:5]:

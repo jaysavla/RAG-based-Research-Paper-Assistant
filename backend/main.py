@@ -4,6 +4,7 @@ import pdfplumber
 import io
 import re
 import numpy as np
+import faiss
 from sentence_transformers import SentenceTransformer
 
 app = FastAPI(title="RAG Research Assistant")
@@ -16,8 +17,13 @@ print("[STARTUP] Loading embedding model...")
 EMBED_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
 print("[STARTUP] Model ready.")
 
-# In-memory store: filename -> {chunks, embeddings}
+# In-memory store: filename -> {chunks, embeddings, index}
 DOCUMENT_STORE: Dict[str, Dict] = {}
+
+# Global index across all documents for multi-doc retrieval
+# Stores (filename, chunk_id) so we can trace back any result
+GLOBAL_INDEX = None
+GLOBAL_CHUNK_MAP: List[Dict] = []  # [{filename, chunk_id, text, pages}, ...]
 
 
 def extract_text_by_page(pdf_bytes: io.BytesIO) -> List[Dict]:
@@ -98,6 +104,44 @@ def embed_chunks(chunks: List[Dict]) -> np.ndarray:
     return embeddings  # shape: (num_chunks, 384)
 
 
+def build_faiss_index(embeddings: np.ndarray) -> faiss.Index:
+    """Build a cosine-similarity FAISS index (normalize + inner product)."""
+    dim = embeddings.shape[1]
+    vectors = embeddings.astype(np.float32).copy()
+    faiss.normalize_L2(vectors)
+    index = faiss.IndexFlatIP(dim)  # Inner product on normalized = cosine similarity
+    index.add(vectors)
+    return index
+
+
+def rebuild_global_index():
+    """Merge all per-document indexes into one global index for cross-doc search."""
+    global GLOBAL_INDEX, GLOBAL_CHUNK_MAP
+
+    GLOBAL_CHUNK_MAP = []
+    all_vectors = []
+
+    for filename, doc in DOCUMENT_STORE.items():
+        for chunk in doc["chunks"]:
+            GLOBAL_CHUNK_MAP.append({
+                "filename": filename,
+                "chunk_id": chunk["chunk_id"],
+                "text": chunk["text"],
+                "pages": chunk["pages"],
+            })
+        all_vectors.append(doc["embeddings"])
+
+    if not all_vectors:
+        return
+
+    merged = np.vstack(all_vectors).astype(np.float32)
+    faiss.normalize_L2(merged)
+    dim = merged.shape[1]
+    GLOBAL_INDEX = faiss.IndexFlatIP(dim)
+    GLOBAL_INDEX.add(merged)
+    print(f"[FAISS] Global index rebuilt: {GLOBAL_INDEX.ntotal} vectors from {len(DOCUMENT_STORE)} doc(s)")
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "message": "RAG backend is running"}
@@ -120,13 +164,16 @@ async def upload_pdfs(files: List[UploadFile] = File(...)):
         print(f"[EMBED] Embedding {len(chunks)} chunks for '{file.filename}'...")
         embeddings = embed_chunks(chunks)
 
-        # Store in memory for retrieval later
+        index = build_faiss_index(embeddings)
+
         DOCUMENT_STORE[file.filename] = {
             "chunks": chunks,
             "embeddings": embeddings,
+            "index": index,
         }
 
         print(f"[UPLOAD] {file.filename} | pages={num_pages} | chunks={len(chunks)} | embed_dim={embeddings.shape[1]}")
+        print(f"[FAISS] Index for '{file.filename}': {index.ntotal} vectors indexed")
 
         results.append({
             "filename": file.filename,
@@ -134,7 +181,9 @@ async def upload_pdfs(files: List[UploadFile] = File(...)):
             "text_length": full_text_length,
             "num_chunks": len(chunks),
             "embed_dim": embeddings.shape[1],
+            "vectors_indexed": index.ntotal,
             "chunks": chunks,
         })
 
+    rebuild_global_index()
     return {"uploaded": len(results), "files": results}
