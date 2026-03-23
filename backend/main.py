@@ -6,7 +6,7 @@ import io
 import re
 import numpy as np
 import faiss
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
@@ -19,10 +19,12 @@ app = FastAPI(title="RAG Research Assistant")
 CHUNK_SIZE = 200   # target words per chunk
 CHUNK_OVERLAP = 50 # words of overlap between chunks
 
-# Load model once at startup — not per request
+# Load models once at startup — not per request
 print("[STARTUP] Loading embedding model...")
 EMBED_MODEL = SentenceTransformer("allenai/specter")
-print("[STARTUP] Model ready.")
+print("[STARTUP] Loading cross-encoder re-ranker...")
+RERANKER = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+print("[STARTUP] Models ready.")
 
 # In-memory store: filename -> {chunks, embeddings, index}
 DOCUMENT_STORE: Dict[str, Dict] = {}
@@ -241,17 +243,28 @@ def ask_documents(req: AskRequest):
     if GLOBAL_INDEX is None or GLOBAL_INDEX.ntotal == 0:
         return {"error": "No documents uploaded yet. Please upload PDFs first."}
 
-    # Retrieve top-k chunks
+    # Step 1: FAISS retrieval — fetch 3x candidates for re-ranking
+    faiss_k = min(req.top_k * 3, GLOBAL_INDEX.ntotal)
     query_vec = EMBED_MODEL.encode([req.query], show_progress_bar=False).astype(np.float32)
     faiss.normalize_L2(query_vec)
-    scores, indices = GLOBAL_INDEX.search(query_vec, req.top_k)
+    scores, indices = GLOBAL_INDEX.search(query_vec, faiss_k)
 
-    retrieved = []
+    candidates = []
     for idx, score in zip(indices[0], scores[0]):
         if idx == -1:
             continue
         chunk = GLOBAL_CHUNK_MAP[idx]
-        retrieved.append({**chunk, "score": round(float(score), 4)})
+        candidates.append({**chunk, "faiss_score": round(float(score), 4)})
+
+    # Step 2: Cross-encoder re-ranking
+    pairs = [[req.query, c["text"]] for c in candidates]
+    ce_scores = RERANKER.predict(pairs)
+    for c, ce_score in zip(candidates, ce_scores):
+        c["rerank_score"] = round(float(ce_score), 4)
+
+    candidates.sort(key=lambda x: x["rerank_score"], reverse=True)
+    retrieved = candidates[: req.top_k]
+    print(f"[RERANK] {len(candidates)} candidates → top {len(retrieved)} after re-ranking")
 
     # Build context block with citation labels [1], [2], ...
     context_lines = []
@@ -299,7 +312,8 @@ Question: {req.query}
         "query": req.query,
         "answer": answer,
         "sources": [
-            {"label": f"[{i+1}]", "filename": r["filename"], "pages": r["pages"], "score": r["score"]}
+            {"label": f"[{i+1}]", "filename": r["filename"], "pages": r["pages"],
+             "faiss_score": r["faiss_score"], "rerank_score": r["rerank_score"]}
             for i, r in enumerate(retrieved)
         ],
     }

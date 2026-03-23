@@ -113,4 +113,4 @@ if ask_clicked and query.strip():
         st.divider()
         st.caption("**Sources used:**")
         for src in data["sources"]:
-            st.caption(f"{src['label']} {src['filename']} — pages {src['pages']} (score: {src['score']})")
+            st.caption(f"{src['label']} {src['filename']} — pages {src['pages']} | rerank: {src['rerank_score']} | faiss: {src['faiss_score']}")
