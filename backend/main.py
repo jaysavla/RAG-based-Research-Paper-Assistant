@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import random
+import uuid
 import pdfplumber
 import io
 import re
@@ -37,6 +38,9 @@ GLOBAL_CHUNK_MAP: List[Dict] = []  # [{filename, chunk_id, text, pages}, ...]
 
 # Gold evaluation set: [{question, filename, chunk_id, source_text}, ...]
 EVAL_SET: List[Dict] = []
+
+# Upload jobs: job_id -> {status, progress, files, result, error}
+JOBS: Dict[str, Dict] = {}
 
 
 def extract_text_by_page(pdf_bytes: io.BytesIO) -> List[Dict]:
@@ -160,46 +164,104 @@ def root():
     return {"status": "ok", "message": "RAG backend is running"}
 
 
-@app.post("/upload")
-async def upload_pdfs(files: List[UploadFile] = File(...)):
+def _process_upload(job_id: str, file_payloads: List[Dict]):
+    """Background task: extract → chunk → embed → index. Updates JOBS[job_id] throughout."""
+    job = JOBS[job_id]
     results = []
 
+    try:
+        for payload in file_payloads:
+            filename = payload["filename"]
+            content  = payload["content"]
+
+            job["progress"] = f"Extracting text: {filename}"
+            print(f"[JOB {job_id}] Extracting '{filename}'")
+            pages = extract_text_by_page(io.BytesIO(content))
+            num_pages = len(pages)
+            full_text_length = sum(len(p["text"]) for p in pages)
+
+            chunks = split_into_chunks(pages)
+
+            job["progress"] = f"Embedding {len(chunks)} chunks: {filename}"
+            print(f"[JOB {job_id}] Embedding {len(chunks)} chunks for '{filename}'")
+            embeddings = embed_chunks(chunks)
+
+            job["progress"] = f"Building FAISS index: {filename}"
+            index = build_faiss_index(embeddings)
+
+            DOCUMENT_STORE[filename] = {
+                "chunks": chunks,
+                "embeddings": embeddings,
+                "index": index,
+            }
+
+            print(f"[JOB {job_id}] Done '{filename}' | pages={num_pages} chunks={len(chunks)}")
+            results.append({
+                "filename": filename,
+                "num_pages": num_pages,
+                "text_length": full_text_length,
+                "num_chunks": len(chunks),
+                "embed_dim": int(embeddings.shape[1]),
+                "vectors_indexed": index.ntotal,
+                "chunks": chunks,
+            })
+
+        job["progress"] = "Rebuilding global index"
+        rebuild_global_index()
+
+        job["status"]   = "done"
+        job["progress"] = "Complete"
+        job["result"]   = {"uploaded": len(results), "files": results}
+        print(f"[JOB {job_id}] Finished — {len(results)} file(s)")
+
+    except Exception as exc:
+        job["status"] = "failed"
+        job["error"]  = str(exc)
+        print(f"[JOB {job_id}] FAILED: {exc}")
+
+
+@app.post("/upload")
+async def upload_pdfs(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
+    """Read file bytes immediately, return job_id, process in background."""
+    job_id = str(uuid.uuid4())[:8]
+
+    file_payloads = []
     for file in files:
         content = await file.read()
-        pdf_bytes = io.BytesIO(content)
+        file_payloads.append({"filename": file.filename, "content": content})
 
-        pages = extract_text_by_page(pdf_bytes)
-        num_pages = len(pages)
-        full_text_length = sum(len(p["text"]) for p in pages)
+    JOBS[job_id] = {
+        "status":   "processing",
+        "progress": "Queued",
+        "files":    [f["filename"] for f in file_payloads],
+        "result":   None,
+        "error":    None,
+    }
 
-        chunks = split_into_chunks(pages)
+    background_tasks.add_task(_process_upload, job_id, file_payloads)
+    print(f"[UPLOAD] Job {job_id} queued for {[f['filename'] for f in file_payloads]}")
 
-        print(f"[EMBED] Embedding {len(chunks)} chunks for '{file.filename}'...")
-        embeddings = embed_chunks(chunks)
+    return {
+        "job_id":  job_id,
+        "status":  "processing",
+        "files":   [f["filename"] for f in file_payloads],
+        "poll_url": f"/upload/status/{job_id}",
+    }
 
-        index = build_faiss_index(embeddings)
 
-        DOCUMENT_STORE[file.filename] = {
-            "chunks": chunks,
-            "embeddings": embeddings,
-            "index": index,
-        }
-
-        print(f"[UPLOAD] {file.filename} | pages={num_pages} | chunks={len(chunks)} | embed_dim={embeddings.shape[1]}")
-        print(f"[FAISS] Index for '{file.filename}': {index.ntotal} vectors indexed")
-
-        results.append({
-            "filename": file.filename,
-            "num_pages": num_pages,
-            "text_length": full_text_length,
-            "num_chunks": len(chunks),
-            "embed_dim": embeddings.shape[1],
-            "vectors_indexed": index.ntotal,
-            "chunks": chunks,
-        })
-
-    rebuild_global_index()
-    return {"uploaded": len(results), "files": results}
+@app.get("/upload/status/{job_id}")
+def upload_status(job_id: str):
+    if job_id not in JOBS:
+        return {"error": f"Job '{job_id}' not found."}
+    job = JOBS[job_id]
+    return {
+        "job_id":   job_id,
+        "status":   job["status"],
+        "progress": job["progress"],
+        "files":    job["files"],
+        "result":   job["result"],
+        "error":    job["error"],
+    }
 
 
 class QueryRequest(BaseModel):
