@@ -14,7 +14,7 @@ CHUNK_OVERLAP = 50 # words of overlap between chunks
 
 # Load model once at startup — not per request
 print("[STARTUP] Loading embedding model...")
-EMBED_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+EMBED_MODEL = SentenceTransformer("allenai/specter")
 print("[STARTUP] Model ready.")
 
 # In-memory store: filename -> {chunks, embeddings, index}
