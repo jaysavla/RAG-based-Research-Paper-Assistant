@@ -40,17 +40,17 @@ def faiss_only(query: str, k: int) -> List[int]:
     return [int(i) for i in idxs[0] if i != -1]
 
 
-def faiss_then_rerank(query: str, k: int) -> List[int]:
-    """FAISS candidates → cross-encoder re-ranking."""
+def faiss_then_rerank(query: str, k: int) -> List[Tuple[int, float]]:
+    """FAISS candidates → cross-encoder re-ranking. Returns (idx, score) pairs."""
     candidates = faiss_only(query, min(k * 3, store.GLOBAL_INDEX.ntotal))
     pairs     = [[query, store.GLOBAL_CHUNK_MAP[i]["text"]] for i in candidates]
     ce_scores = store.RERANKER.predict(pairs)
     ranked    = sorted(zip(candidates, ce_scores), key=lambda x: x[1], reverse=True)
-    return [idx for idx, _ in ranked[:k]]
+    return [(int(idx), float(score)) for idx, score in ranked[:k]]
 
 
-def hybrid_then_rerank(query: str, k: int) -> List[int]:
-    """BM25 + FAISS → RRF merge → cross-encoder re-ranking."""
+def hybrid_then_rerank(query: str, k: int) -> List[Tuple[int, float]]:
+    """BM25 + FAISS → RRF merge → cross-encoder re-ranking. Returns (idx, score) pairs."""
     pool       = min(k * 3, store.GLOBAL_INDEX.ntotal)
     faiss_idxs = faiss_only(query, pool)
     tokens     = query.lower().split()
@@ -59,19 +59,17 @@ def hybrid_then_rerank(query: str, k: int) -> List[int]:
     pairs      = [[query, store.GLOBAL_CHUNK_MAP[i]["text"]] for i in merged]
     ce_scores  = store.RERANKER.predict(pairs)
     ranked     = sorted(zip(merged, ce_scores), key=lambda x: x[1], reverse=True)
-    return [idx for idx, _ in ranked[:k]]
+    return [(int(idx), float(score)) for idx, score in ranked[:k]]
 
 
 def retrieve_and_build_prompt(query: str, top_k: int) -> Tuple[str, List[Dict]]:
     """Hybrid retrieval → build LLM prompt + sources metadata."""
-    idxs = hybrid_then_rerank(query, top_k)
+    ranked = hybrid_then_rerank(query, top_k)
 
     retrieved = []
-    for idx, ce_score in zip(idxs, store.RERANKER.predict(
-        [[query, store.GLOBAL_CHUNK_MAP[i]["text"]] for i in idxs]
-    )):
+    for idx, ce_score in ranked:
         chunk = store.GLOBAL_CHUNK_MAP[idx]
-        retrieved.append({**chunk, "rerank_score": round(float(ce_score), 4)})
+        retrieved.append({**chunk, "rerank_score": round(ce_score, 4)})
 
     context = "\n\n".join(
         f"[{i+1}] Source: {r['filename']}, pages {r['pages']}\n{r['text']}"

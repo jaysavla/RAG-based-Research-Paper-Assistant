@@ -1,11 +1,12 @@
 import logging
-from typing import Dict, List
+from typing import List
 
 import faiss
 import numpy as np
 from rank_bm25 import BM25Okapi
 
 import store
+from utils import rrf_merge  # noqa: F401  (re-exported for legacy callers)
 
 logger = logging.getLogger("rag")
 
@@ -46,11 +47,3 @@ def rebuild_bm25_index() -> None:
     logger.info("BM25 index built: %d documents", len(store.BM25_CORPUS))
 
 
-def rrf_merge(list1: List[int], list2: List[int], k: int, rrf_k: int = 60) -> List[int]:
-    """Reciprocal Rank Fusion — combine two ranked lists into one."""
-    scores: Dict[int, float] = {}
-    for rank, idx in enumerate(list1):
-        scores[idx] = scores.get(idx, 0.0) + 1.0 / (rrf_k + rank + 1)
-    for rank, idx in enumerate(list2):
-        scores[idx] = scores.get(idx, 0.0) + 1.0 / (rrf_k + rank + 1)
-    return sorted(scores, key=lambda x: scores[x], reverse=True)[:k]

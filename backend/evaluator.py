@@ -61,8 +61,8 @@ def run_evaluation(k: int) -> Dict:
             continue
 
         f_res = faiss_only(item["question"], k)
-        r_res = faiss_then_rerank(item["question"], k)
-        h_res = hybrid_then_rerank(item["question"], k)
+        r_res = [idx for idx, _ in faiss_then_rerank(item["question"], k)]
+        h_res = [idx for idx, _ in hybrid_then_rerank(item["question"], k)]
 
         f_hit = int(correct in f_res);  r_hit = int(correct in r_res);  h_hit = int(correct in h_res)
         faiss_hits.append(f_hit);  rerank_hits.append(r_hit);  hybrid_hits.append(h_hit)
