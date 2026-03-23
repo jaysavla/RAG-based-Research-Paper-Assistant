@@ -93,6 +93,7 @@ def process_upload(job_id: str, file_payloads: List[Dict], overwrite: bool = Fal
             store.DOCUMENT_STORE[filename] = {
                 "chunks": chunks, "embeddings": embeddings, "index": index
             }
+            store.SESSION_DOCS.add(filename)
             processed += 1
             logger.info("Job %s — done '%s' | pages=%d chunks=%d warnings=%d",
                         job_id, filename, num_pages_total, len(chunks), len(warnings))

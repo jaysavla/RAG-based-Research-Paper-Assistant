@@ -7,11 +7,18 @@ from retriever import faiss_only, faiss_then_rerank, hybrid_then_rerank
 logger = logging.getLogger("rag")
 
 
-def generate_eval_set(samples_per_doc: int) -> List[Dict]:
-    """Sample chunks evenly per doc, ask GPT to generate one question per chunk."""
-    store.EVAL_SET.clear()
+def generate_eval_set(num_questions: int) -> List[Dict]:
+    """Sample chunks across all docs, ask GPT to generate one question per chunk.
 
-    for filename, doc in store.DOCUMENT_STORE.items():
+    num_questions is the total target — distributed evenly across documents.
+    """
+    store.EVAL_SET.clear()
+    session_store   = {k: v for k, v in store.DOCUMENT_STORE.items()
+                       if k in store.SESSION_DOCS}
+    num_docs        = len(session_store)
+    samples_per_doc = max(1, num_questions // num_docs)
+
+    for filename, doc in session_store.items():
         good_chunks = [c for c in doc["chunks"] if c["word_count"] >= 50] or doc["chunks"]
         step        = max(1, len(good_chunks) // samples_per_doc)
         sampled     = good_chunks[::step][:samples_per_doc]

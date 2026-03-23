@@ -166,9 +166,9 @@ def ask_stream(req: AskRequest):
 
 @app.post("/generate-eval-set")
 def generate_eval_set_endpoint(req: EvalGenRequest):
-    if not store.DOCUMENT_STORE:
-        return {"error": "No documents uploaded yet."}
-    questions = generate_eval_set(req.samples_per_doc)
+    if not store.SESSION_DOCS:
+        return {"error": "No documents uploaded in this session. Please upload PDFs first."}
+    questions = generate_eval_set(req.num_questions)
     return {"eval_set_size": len(questions), "questions": questions}
 
 

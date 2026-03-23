@@ -12,7 +12,7 @@ class AskRequest(BaseModel):
 
 
 class EvalGenRequest(BaseModel):
-    samples_per_doc: int = 5
+    num_questions: int = 5
 
 
 class EvalRunRequest(BaseModel):

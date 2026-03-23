@@ -4,7 +4,7 @@ All other modules import from here — never reassign these from outside,
 use store.VARIABLE = ... so the binding in this namespace is updated.
 """
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import faiss
 import numpy as np
@@ -44,3 +44,6 @@ EVAL_SET: List[Dict] = []
 
 # ── Async upload job tracker ──────────────────────────────────────────────────
 JOBS: Dict[str, Dict] = {}
+
+# ── Documents uploaded in the current process session (not restored from disk) ─
+SESSION_DOCS: Set[str] = set()
