@@ -54,3 +54,34 @@ if uploaded_files:
                     st.info(f"... and {file_info['num_chunks'] - 5} more chunks")
 
             st.divider()
+
+# ── Query section ────────────────────────────────────────────────────────────
+st.divider()
+st.subheader("Ask a question across your papers")
+
+query = st.text_input("Enter your question", placeholder="e.g. What are the limitations of these approaches?")
+top_k = st.slider("Number of results", min_value=1, max_value=10, value=5)
+
+if st.button("Search") and query.strip():
+    with st.spinner("Searching..."):
+        try:
+            response = requests.post(
+                f"{BACKEND_URL}/query",
+                json={"query": query, "top_k": top_k},
+            )
+            response.raise_for_status()
+            data = response.json()
+        except requests.exceptions.ConnectionError:
+            st.error("Cannot connect to backend. Make sure it is running on port 8000.")
+            st.stop()
+        except Exception as e:
+            st.error(f"Error: {e}")
+            st.stop()
+
+    if "error" in data:
+        st.warning(data["error"])
+    else:
+        st.success(f"Top {len(data['results'])} results for: *{data['query']}*")
+        for res in data["results"]:
+            with st.expander(f"#{res['rank']} | Score: {res['score']} | {res['filename']} | pages {res['pages']}"):
+                st.write(res["text"])

@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File
+from pydantic import BaseModel
 from typing import List, Dict
 import pdfplumber
 import io
@@ -9,7 +10,7 @@ from sentence_transformers import SentenceTransformer
 
 app = FastAPI(title="RAG Research Assistant")
 
-CHUNK_SIZE = 300   # target words per chunk
+CHUNK_SIZE = 200   # target words per chunk
 CHUNK_OVERLAP = 50 # words of overlap between chunks
 
 # Load model once at startup — not per request
@@ -187,3 +188,38 @@ async def upload_pdfs(files: List[UploadFile] = File(...)):
 
     rebuild_global_index()
     return {"uploaded": len(results), "files": results}
+
+
+class QueryRequest(BaseModel):
+    query: str
+    top_k: int = 5
+
+
+@app.post("/query")
+def query_documents(req: QueryRequest):
+    if GLOBAL_INDEX is None or GLOBAL_INDEX.ntotal == 0:
+        return {"error": "No documents uploaded yet. Please upload PDFs first."}
+
+    print(f"[QUERY] '{req.query}' | top_k={req.top_k}")
+
+    query_vec = EMBED_MODEL.encode([req.query], show_progress_bar=False).astype(np.float32)
+    faiss.normalize_L2(query_vec)
+
+    scores, indices = GLOBAL_INDEX.search(query_vec, req.top_k)
+
+    results = []
+    for rank, (idx, score) in enumerate(zip(indices[0], scores[0])):
+        if idx == -1:
+            continue
+        chunk = GLOBAL_CHUNK_MAP[idx]
+        results.append({
+            "rank": rank + 1,
+            "score": round(float(score), 4),
+            "filename": chunk["filename"],
+            "chunk_id": chunk["chunk_id"],
+            "pages": chunk["pages"],
+            "text": chunk["text"],
+        })
+        print(f"  #{rank+1} score={score:.4f} | {chunk['filename']} chunk {chunk['chunk_id']} pages {chunk['pages']}")
+
+    return {"query": req.query, "top_k": req.top_k, "results": results}
