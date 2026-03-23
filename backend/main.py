@@ -5,6 +5,7 @@ from typing import List, Dict, Optional
 import random
 import uuid
 import json
+import logging
 import pdfplumber
 import io
 import re
@@ -19,6 +20,13 @@ import os
 load_dotenv()
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("rag")
+
 app = FastAPI(title="RAG Research Assistant")
 
 CHUNK_SIZE = 200   # target words per chunk
@@ -30,11 +38,11 @@ MIN_TEXT_CHARS    = 200   # below this → likely image-only or nearly blank
 PDF_MAGIC         = b"%PDF"
 
 # Load models once at startup — not per request
-print("[STARTUP] Loading embedding model...")
+logger.info("Loading embedding model...")
 EMBED_MODEL = SentenceTransformer("allenai/specter")
-print("[STARTUP] Loading cross-encoder re-ranker...")
+logger.info("Loading cross-encoder re-ranker...")
 RERANKER = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-print("[STARTUP] Models ready.")
+logger.info("Models ready.")
 
 # In-memory store: filename -> {chunks, embeddings, index}
 DOCUMENT_STORE: Dict[str, Dict] = {}
@@ -84,7 +92,7 @@ def save_store() -> None:
             json.dump({"filename": filename, "chunks": doc["chunks"]}, f)
         np.save(os.path.join(doc_dir, "embeddings.npy"), doc["embeddings"])
 
-    print(f"[PERSIST] Saved {len(DOCUMENT_STORE)} doc(s) → '{STORE_DIR}/'")
+    logger.info("Saved %d doc(s) to '%s/'", len(DOCUMENT_STORE), STORE_DIR)
 
 
 def load_store() -> None:
@@ -96,7 +104,7 @@ def load_store() -> None:
     docs_dir      = os.path.join(STORE_DIR, "docs")
 
     if not os.path.exists(index_path):
-        print("[PERSIST] No saved store found — starting fresh.")
+        logger.info("No saved store found — starting fresh.")
         return
 
     GLOBAL_INDEX = faiss.read_index(index_path)
@@ -126,7 +134,7 @@ def load_store() -> None:
             }
 
     rebuild_bm25_index()
-    print(f"[PERSIST] Loaded {len(DOCUMENT_STORE)} doc(s), {GLOBAL_INDEX.ntotal} vectors.")
+    logger.info("Loaded %d doc(s), %d vectors.", len(DOCUMENT_STORE), GLOBAL_INDEX.ntotal)
 
 
 def validate_file(content: bytes) -> Optional[str]:
@@ -253,7 +261,7 @@ def rebuild_global_index():
     dim = merged.shape[1]
     GLOBAL_INDEX = faiss.IndexFlatIP(dim)
     GLOBAL_INDEX.add(merged)
-    print(f"[FAISS] Global index rebuilt: {GLOBAL_INDEX.ntotal} vectors from {len(DOCUMENT_STORE)} doc(s)")
+    logger.info("FAISS global index: %d vectors from %d doc(s)", GLOBAL_INDEX.ntotal, len(DOCUMENT_STORE))
     rebuild_bm25_index()
     save_store()
 
@@ -265,7 +273,7 @@ def rebuild_bm25_index() -> None:
         return
     BM25_CORPUS = [c["text"].lower().split() for c in GLOBAL_CHUNK_MAP]
     BM25_INDEX  = BM25Okapi(BM25_CORPUS)
-    print(f"[BM25] Index built: {len(BM25_CORPUS)} documents")
+    logger.info("BM25 index built: %d documents", len(BM25_CORPUS))
 
 
 def _rrf_merge(list1: List[int], list2: List[int], k: int, rrf_k: int = 60) -> List[int]:
@@ -303,7 +311,7 @@ def _process_upload(job_id: str, file_payloads: List[Dict], overwrite: bool = Fa
 
             # ── Duplicate check ───────────────────────────────────────────────
             if filename in DOCUMENT_STORE and not overwrite:
-                print(f"[JOB {job_id}] Skipping duplicate: '{filename}'")
+                logger.warning("Job %s — skipping duplicate: '%s'", job_id, filename)
                 results.append({
                     "filename": filename,
                     "status": "skipped",
@@ -322,7 +330,7 @@ def _process_upload(job_id: str, file_payloads: List[Dict], overwrite: bool = Fa
                     "PDF is password-protected." if "password" in err or "encrypt" in err
                     else f"Could not parse PDF: {exc}"
                 )
-                print(f"[JOB {job_id}] Skipping '{filename}': {reason}")
+                logger.warning("Job %s — skipping '%s': %s", job_id, filename, reason)
                 results.append({
                     "filename": filename,
                     "status": "skipped",
@@ -335,7 +343,7 @@ def _process_upload(job_id: str, file_payloads: List[Dict], overwrite: bool = Fa
 
             # ── Image-only / scanned detection ────────────────────────────────
             if num_pages_total == 0:
-                print(f"[JOB {job_id}] Skipping '{filename}': no extractable text (image-only or scanned)")
+                logger.warning("Job %s — skipping '%s': no extractable text (image-only or scanned)", job_id, filename)
                 results.append({
                     "filename": filename,
                     "status": "skipped",
@@ -373,7 +381,7 @@ def _process_upload(job_id: str, file_payloads: List[Dict], overwrite: bool = Fa
 
             # ── Embed & index ─────────────────────────────────────────────────
             job["progress"] = f"Embedding {len(chunks)} chunks: {filename}"
-            print(f"[JOB {job_id}] Embedding {len(chunks)} chunks for '{filename}'")
+            logger.info("Job %s — embedding %d chunks for '%s'", job_id, len(chunks), filename)
             embeddings = embed_chunks(chunks)
 
             job["progress"] = f"Building FAISS index: {filename}"
@@ -382,7 +390,7 @@ def _process_upload(job_id: str, file_payloads: List[Dict], overwrite: bool = Fa
             DOCUMENT_STORE[filename] = {"chunks": chunks, "embeddings": embeddings, "index": index}
             processed += 1
 
-            print(f"[JOB {job_id}] Done '{filename}' | pages={num_pages_total} chunks={len(chunks)} warnings={warnings}")
+            logger.info("Job %s — done '%s' | pages=%d chunks=%d warnings=%d", job_id, filename, num_pages_total, len(chunks), len(warnings))
             results.append({
                 "filename": filename,
                 "status": file_status,
@@ -401,12 +409,12 @@ def _process_upload(job_id: str, file_payloads: List[Dict], overwrite: bool = Fa
         job["status"]   = "done"
         job["progress"] = "Complete"
         job["result"]   = {"uploaded": processed, "files": results}
-        print(f"[JOB {job_id}] Finished — {processed} processed, {len(results) - processed} skipped")
+        logger.info("Job %s — finished: %d processed, %d skipped", job_id, processed, len(results) - processed)
 
     except Exception as exc:
         job["status"] = "failed"
         job["error"]  = str(exc)
-        print(f"[JOB {job_id}] FAILED: {exc}")
+        logger.error("Job %s — FAILED: %s", job_id, exc, exc_info=True)
 
 
 @app.post("/upload")
@@ -426,7 +434,7 @@ async def upload_pdfs(
         error = validate_file(content)
         if error:
             rejected.append({"filename": file.filename, "reason": error})
-            print(f"[UPLOAD] Rejected '{file.filename}': {error}")
+            logger.warning("Rejected '%s': %s", file.filename, error)
         else:
             file_payloads.append({"filename": file.filename, "content": content})
 
@@ -443,7 +451,7 @@ async def upload_pdfs(
     }
 
     background_tasks.add_task(_process_upload, job_id, file_payloads, overwrite)
-    print(f"[UPLOAD] Job {job_id} queued — {len(file_payloads)} valid, {len(rejected)} rejected")
+    logger.info("Job %s queued — %d valid, %d rejected", job_id, len(file_payloads), len(rejected))
 
     return {
         "job_id":   job_id,
@@ -479,7 +487,7 @@ def query_documents(req: QueryRequest):
     if GLOBAL_INDEX is None or GLOBAL_INDEX.ntotal == 0:
         return {"error": "No documents uploaded yet. Please upload PDFs first."}
 
-    print(f"[QUERY] '{req.query}' | top_k={req.top_k}")
+    logger.info("QUERY top_k=%d — '%s'", req.top_k, req.query)
 
     query_vec = EMBED_MODEL.encode([req.query], show_progress_bar=False).astype(np.float32)
     faiss.normalize_L2(query_vec)
@@ -499,7 +507,7 @@ def query_documents(req: QueryRequest):
             "pages": chunk["pages"],
             "text": chunk["text"],
         })
-        print(f"  #{rank+1} score={score:.4f} | {chunk['filename']} chunk {chunk['chunk_id']} pages {chunk['pages']}")
+        logger.debug("  #%d score=%.4f | %s chunk %d pages %s", rank+1, score, chunk['filename'], chunk['chunk_id'], chunk['pages'])
 
     return {"query": req.query, "top_k": req.top_k, "results": results}
 
@@ -535,7 +543,7 @@ def ask_documents(req: AskRequest):
 
     candidates.sort(key=lambda x: x["rerank_score"], reverse=True)
     retrieved = candidates[: req.top_k]
-    print(f"[RERANK] {len(candidates)} candidates → top {len(retrieved)} after re-ranking")
+    logger.info("Rerank: %d candidates → top %d", len(candidates), len(retrieved))
 
     # Build context block with citation labels [1], [2], ...
     context_lines = []
@@ -546,7 +554,7 @@ def ask_documents(req: AskRequest):
         )
     context_block = "\n\n".join(context_lines)
 
-    print(f"[ASK] '{req.query}' | {len(retrieved)} chunks sent to LLM")
+    logger.info("ASK — '%s' | %d chunks sent to LLM", req.query, len(retrieved))
 
     prompt = f"""You are a research assistant. Using ONLY the context below, answer the user's question.
 
@@ -577,7 +585,7 @@ Question: {req.query}
     )
 
     answer = response.choices[0].message.content
-    print(f"[ASK] LLM response received ({len(answer)} chars)")
+    logger.info("ASK — LLM response received (%d chars)", len(answer))
 
     return {
         "query": req.query,
@@ -655,7 +663,7 @@ def ask_stream(req: AskRequest):
         return StreamingResponse(_error(), media_type="text/plain")
 
     prompt, sources = _retrieve_and_build_prompt(req.query, req.top_k)
-    print(f"[ASK/STREAM] '{req.query}' | {len(sources)} sources")
+    logger.info("ASK/STREAM — '%s' | %d sources", req.query, len(sources))
 
     def generate():
         # First line: sources metadata as JSON so frontend can parse it
@@ -766,9 +774,9 @@ def generate_eval_set(req: EvalGenRequest):
                 "chunk_id": chunk["chunk_id"],
                 "source_text": chunk["text"][:300],
             })
-            print(f"[EVAL-GEN] '{question[:70]}' → {filename} chunk {chunk['chunk_id']}")
+            logger.info("Eval-gen: '%s' → %s chunk %d", question[:70], filename, chunk['chunk_id'])
 
-    print(f"[EVAL-GEN] Gold set: {len(EVAL_SET)} questions across {len(DOCUMENT_STORE)} doc(s)")
+    logger.info("Eval-gen complete: %d questions across %d doc(s)", len(EVAL_SET), len(DOCUMENT_STORE))
     return {"eval_set_size": len(EVAL_SET), "questions": EVAL_SET}
 
 
@@ -796,7 +804,7 @@ def run_evaluation(req: EvalRunRequest):
             None,
         )
         if correct_global_idx is None:
-            print(f"[EVAL] Skipping — chunk not found: {item['filename']} #{item['chunk_id']}")
+            logger.warning("Eval — chunk not found in global map: %s #%d", item['filename'], item['chunk_id'])
             continue
 
         f_results = _faiss_only(item["question"], k)
@@ -823,10 +831,9 @@ def run_evaluation(req: EvalRunRequest):
             "rerank_hit": bool(r_hit),  "rerank_rank": r_rank,
             "hybrid_hit": bool(h_hit),  "hybrid_rank": h_rank,
         })
-        print(
-            f"[EVAL] FAISS hit={f_hit} rank={f_rank} | "
-            f"Rerank hit={r_hit} rank={r_rank} | "
-            f"Hybrid hit={h_hit} rank={h_rank} | '{item['question'][:50]}'"
+        logger.info(
+            "Eval — FAISS hit=%d rank=%s | Rerank hit=%d rank=%s | Hybrid hit=%d rank=%s | '%s'",
+            f_hit, f_rank, r_hit, r_rank, h_hit, h_rank, item['question'][:50]
         )
 
     n = len(faiss_hits)
