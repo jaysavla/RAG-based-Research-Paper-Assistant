@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import List, Dict, Optional
 import random
 import uuid
+import json
 import pdfplumber
 import io
 import re
@@ -46,6 +47,79 @@ EVAL_SET: List[Dict] = []
 
 # Upload jobs: job_id -> {status, progress, files, result, error}
 JOBS: Dict[str, Dict] = {}
+
+STORE_DIR = os.path.join(os.path.dirname(__file__), "store")
+
+
+def _safe_name(filename: str) -> str:
+    """Sanitise a filename so it can be used as a directory name."""
+    return re.sub(r"[^\w\-.]", "_", filename)
+
+
+def save_store() -> None:
+    """Persist GLOBAL_INDEX, GLOBAL_CHUNK_MAP, and per-doc data to disk."""
+    if GLOBAL_INDEX is None or GLOBAL_INDEX.ntotal == 0:
+        return
+
+    os.makedirs(STORE_DIR, exist_ok=True)
+
+    faiss.write_index(GLOBAL_INDEX, os.path.join(STORE_DIR, "global.index"))
+
+    with open(os.path.join(STORE_DIR, "chunk_map.json"), "w") as f:
+        json.dump(GLOBAL_CHUNK_MAP, f)
+
+    docs_dir = os.path.join(STORE_DIR, "docs")
+    os.makedirs(docs_dir, exist_ok=True)
+
+    for filename, doc in DOCUMENT_STORE.items():
+        doc_dir = os.path.join(docs_dir, _safe_name(filename))
+        os.makedirs(doc_dir, exist_ok=True)
+        with open(os.path.join(doc_dir, "chunks.json"), "w") as f:
+            json.dump({"filename": filename, "chunks": doc["chunks"]}, f)
+        np.save(os.path.join(doc_dir, "embeddings.npy"), doc["embeddings"])
+
+    print(f"[PERSIST] Saved {len(DOCUMENT_STORE)} doc(s) → '{STORE_DIR}/'")
+
+
+def load_store() -> None:
+    """Load persisted data from disk into memory on startup."""
+    global GLOBAL_INDEX, GLOBAL_CHUNK_MAP
+
+    index_path    = os.path.join(STORE_DIR, "global.index")
+    chunk_map_path = os.path.join(STORE_DIR, "chunk_map.json")
+    docs_dir      = os.path.join(STORE_DIR, "docs")
+
+    if not os.path.exists(index_path):
+        print("[PERSIST] No saved store found — starting fresh.")
+        return
+
+    GLOBAL_INDEX = faiss.read_index(index_path)
+
+    with open(chunk_map_path) as f:
+        GLOBAL_CHUNK_MAP[:] = json.load(f)
+
+    if os.path.exists(docs_dir):
+        for safe in os.listdir(docs_dir):
+            doc_dir        = os.path.join(docs_dir, safe)
+            chunks_path    = os.path.join(doc_dir, "chunks.json")
+            embeddings_path = os.path.join(doc_dir, "embeddings.npy")
+
+            if not (os.path.exists(chunks_path) and os.path.exists(embeddings_path)):
+                continue
+
+            with open(chunks_path) as f:
+                doc_data = json.load(f)
+
+            filename   = doc_data["filename"]
+            chunks     = doc_data["chunks"]
+            embeddings = np.load(embeddings_path)
+            index      = build_faiss_index(embeddings)
+
+            DOCUMENT_STORE[filename] = {
+                "chunks": chunks, "embeddings": embeddings, "index": index
+            }
+
+    print(f"[PERSIST] Loaded {len(DOCUMENT_STORE)} doc(s), {GLOBAL_INDEX.ntotal} vectors.")
 
 
 def validate_file(content: bytes) -> Optional[str]:
@@ -173,6 +247,12 @@ def rebuild_global_index():
     GLOBAL_INDEX = faiss.IndexFlatIP(dim)
     GLOBAL_INDEX.add(merged)
     print(f"[FAISS] Global index rebuilt: {GLOBAL_INDEX.ntotal} vectors from {len(DOCUMENT_STORE)} doc(s)")
+    save_store()
+
+
+@app.on_event("startup")
+def startup():
+    load_store()
 
 
 @app.get("/")
