@@ -15,6 +15,7 @@ logging.basicConfig(
 )
 
 import store                                    # noqa: E402  (models load here)
+from config import BGE_QUERY_PREFIX
 from evaluator import generate_eval_set, run_evaluation
 from jobs import process_upload
 from models import AskRequest, EvalGenRequest, EvalRunRequest, QueryRequest
@@ -97,7 +98,7 @@ def query_documents(req: QueryRequest):
         return {"error": "No documents uploaded yet. Please upload PDFs first."}
 
     logger.info("QUERY top_k=%d — '%s'", req.top_k, req.query)
-    q_vec = store.EMBED_MODEL.encode([req.query], show_progress_bar=False).astype(np.float32)
+    q_vec = store.EMBED_MODEL.encode([BGE_QUERY_PREFIX + req.query], show_progress_bar=False).astype(np.float32)
     faiss.normalize_L2(q_vec)
     scores, indices = store.GLOBAL_INDEX.search(q_vec, req.top_k)
 

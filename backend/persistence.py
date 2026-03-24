@@ -52,7 +52,18 @@ def load_store() -> None:
         logger.info("No saved store found — starting fresh.")
         return
 
-    store.GLOBAL_INDEX = faiss.read_index(index_path)
+    # Reject persisted data if the embedding model changed (dimension mismatch)
+    expected_dim = store.EMBED_MODEL.get_sentence_embedding_dimension()
+    saved_index  = faiss.read_index(index_path)
+    if saved_index.d != expected_dim:
+        logger.warning(
+            "Persisted index has dim=%d but current model outputs dim=%d — "
+            "discarding saved store. Re-upload your documents.",
+            saved_index.d, expected_dim,
+        )
+        return
+
+    store.GLOBAL_INDEX = saved_index
 
     with open(chunk_map_path) as f:
         store.GLOBAL_CHUNK_MAP[:] = json.load(f)

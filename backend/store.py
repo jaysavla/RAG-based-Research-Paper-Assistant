@@ -23,7 +23,7 @@ openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ── ML models (loaded once at process start) ──────────────────────────────────
 logger.info("Loading embedding model...")
-EMBED_MODEL = SentenceTransformer("allenai/specter")
+EMBED_MODEL = SentenceTransformer("BAAI/bge-large-en-v1.5")
 logger.info("Loading cross-encoder re-ranker...")
 RERANKER = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 logger.info("Models ready.")

@@ -5,6 +5,7 @@ import faiss
 import numpy as np
 
 import store
+from config import BGE_QUERY_PREFIX
 from indexer import rrf_merge
 
 logger = logging.getLogger("rag")
@@ -34,7 +35,7 @@ Question: {query}
 
 def faiss_only(query: str, k: int) -> List[int]:
     """Return global CHUNK_MAP indices from FAISS search only."""
-    q_vec = store.EMBED_MODEL.encode([query], show_progress_bar=False).astype(np.float32)
+    q_vec = store.EMBED_MODEL.encode([BGE_QUERY_PREFIX + query], show_progress_bar=False).astype(np.float32)
     faiss.normalize_L2(q_vec)
     _, idxs = store.GLOBAL_INDEX.search(q_vec, k)
     return [int(i) for i in idxs[0] if i != -1]

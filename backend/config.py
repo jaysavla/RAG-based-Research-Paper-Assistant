@@ -9,3 +9,6 @@ MIN_TEXT_CHARS = 200
 PDF_MAGIC      = b"%PDF"
 
 STORE_DIR = os.path.join(os.path.dirname(__file__), "store")
+
+# BGE models expect this prefix on query strings (not on passages)
+BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
