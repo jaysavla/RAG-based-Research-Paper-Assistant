@@ -11,22 +11,33 @@ def extract_text_by_page(pdf_bytes: io.BytesIO) -> List[Dict]:
     pages = []
     with pdfplumber.open(pdf_bytes) as pdf:
         for i, page in enumerate(pdf.pages):
-            text = page.extract_text()
+            # x_tolerance=1 keeps character-level gaps, preserving word spaces
+            # that default tolerance=3 can accidentally merge across.
+            text = page.extract_text(x_tolerance=1, y_tolerance=3)
             if text and text.strip():
                 pages.append({"page": i + 1, "text": text.strip()})
     return pages
 
 
 def clean_text(text: str) -> str:
+    lines = text.split("\n")
     cleaned = []
-    for line in text.split("\n"):
+    for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
         if re.fullmatch(r"\d+", stripped):   # lone page number
             continue
-        cleaned.append(stripped)
-    return " ".join(cleaned)
+        # Rejoin hyphenated line-breaks: "sub-" + next word → "sub" + next word
+        if cleaned and cleaned[-1].endswith("-"):
+            cleaned[-1] = cleaned[-1][:-1] + stripped
+        else:
+            cleaned.append(stripped)
+    text = " ".join(cleaned)
+    # Insert a space between a lowercase letter immediately followed by an
+    # uppercase letter — catches residual merged words from some PDF encodings.
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
+    return text
 
 
 def split_into_chunks(pages: List[Dict]) -> List[Dict]:
