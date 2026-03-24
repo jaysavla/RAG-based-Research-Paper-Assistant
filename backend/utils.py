@@ -1,4 +1,19 @@
+import re
 from typing import Dict, List
+
+_STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "it", "its", "was", "are", "be",
+    "as", "that", "this", "which", "we", "our", "their", "have", "has",
+    "been", "not", "also", "can", "may", "more", "such", "than", "into",
+    "these", "those", "they", "were", "there", "then", "when", "where",
+}
+
+
+def tokenize(text: str) -> list:
+    """Lowercase, keep only real words (≥2 chars), remove stopwords."""
+    return [w for w in re.findall(r"\b[a-z]{2,}\b", text.lower())
+            if w not in _STOPWORDS]
 
 
 def rrf_merge(list1: List[int], list2: List[int], k: int, rrf_k: int = 60) -> List[int]:

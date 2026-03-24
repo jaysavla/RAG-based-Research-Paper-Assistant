@@ -1,4 +1,4 @@
-from utils import rrf_merge
+from utils import rrf_merge, tokenize
 
 
 def test_item_in_both_lists_ranks_first():
@@ -32,6 +32,34 @@ def test_custom_rrf_k_changes_scores():
     result = rrf_merge([0, 1], [1, 0], k=2, rrf_k=1000)
     assert len(result) == 2
     assert set(result) == {0, 1}
+
+
+# ── tokenize ──────────────────────────────────────────────────────────────────
+
+
+def test_tokenize_removes_stopwords():
+    assert "the" not in tokenize("the encoder uses attention")
+    assert "encoder" in tokenize("the encoder uses attention")
+
+
+def test_tokenize_removes_single_char_tokens():
+    assert "a" not in tokenize("a key result")
+
+
+def test_tokenize_lowercases():
+    assert "attention" in tokenize("Attention Is All You Need")
+
+
+def test_tokenize_strips_punctuation():
+    tokens = tokenize("transformers, attention, and layers.")
+    assert all("," not in t and "." not in t for t in tokens)
+
+
+def test_tokenize_empty_string():
+    assert tokenize("") == []
+
+
+# ── rrf_merge ─────────────────────────────────────────────────────────────────
 
 
 def test_higher_rank_in_both_beats_lower():

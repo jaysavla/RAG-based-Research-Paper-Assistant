@@ -7,6 +7,7 @@ import numpy as np
 import store
 from config import BGE_QUERY_PREFIX
 from indexer import rrf_merge
+from utils import tokenize
 
 logger = logging.getLogger("rag")
 
@@ -54,7 +55,7 @@ def hybrid_then_rerank(query: str, k: int) -> List[Tuple[int, float]]:
     """BM25 + FAISS → RRF merge → cross-encoder re-ranking. Returns (idx, score) pairs."""
     pool       = min(k * 3, store.GLOBAL_INDEX.ntotal)
     faiss_idxs = faiss_only(query, pool)
-    tokens     = query.lower().split()
+    tokens     = tokenize(query)
     bm25_idxs  = list(np.argsort(store.BM25_INDEX.get_scores(tokens))[::-1][:pool])
     merged     = rrf_merge(faiss_idxs, bm25_idxs, pool)
     pairs      = [[query, store.GLOBAL_CHUNK_MAP[i]["text"]] for i in merged]

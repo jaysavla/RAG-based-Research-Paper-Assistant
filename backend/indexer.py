@@ -6,7 +6,7 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 
 import store
-from utils import rrf_merge  # noqa: F401  (re-exported for legacy callers)
+from utils import rrf_merge, tokenize  # noqa: F401  (re-exported for legacy callers)
 
 logger = logging.getLogger("rag")
 
@@ -42,7 +42,7 @@ def rebuild_bm25_index() -> None:
     """Build BM25 keyword index over the same corpus as GLOBAL_CHUNK_MAP."""
     if not store.GLOBAL_CHUNK_MAP:
         return
-    store.BM25_CORPUS = [c["text"].lower().split() for c in store.GLOBAL_CHUNK_MAP]
+    store.BM25_CORPUS = [tokenize(c["text"]) for c in store.GLOBAL_CHUNK_MAP]
     store.BM25_INDEX  = BM25Okapi(store.BM25_CORPUS)
     logger.info("BM25 index built: %d documents", len(store.BM25_CORPUS))
 
