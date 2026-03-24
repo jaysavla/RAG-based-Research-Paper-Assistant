@@ -1,0 +1,52 @@
+/* ── Sidebar ──────────────────────────────────────────────────────────────── */
+section[data-testid="stSidebar"] {
+    min-width: 320px;
+    max-width: 360px;
+}
+
+/* ── Source cards ─────────────────────────────────────────────────────────── */
+.source-card {
+    background: #1e1e2e;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+}
+.source-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #cba6f7;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+.source-meta {
+    font-size: 0.82rem;
+    color: #a6adc8;
+    margin-top: 2px;
+}
+/* ── Chunk preview cards ──────────────────────────────────────────────────── */
+.chunk-card {
+    background: #181825;
+    border-left: 3px solid #89b4fa;
+    padding: 10px 14px;
+    border-radius: 0 6px 6px 0;
+    margin-bottom: 10px;
+    font-size: 0.85rem;
+}
+.chunk-meta {
+    color: #6c7086;
+    font-size: 0.75rem;
+    margin-bottom: 4px;
+}
+
+/* ── Metric containers ────────────────────────────────────────────────────── */
+div[data-testid="metric-container"] {
+    background: #1e1e2e;
+    border-radius: 8px;
+    padding: 12px;
+}
+
+/* ── Hide default Streamlit footer ───────────────────────────────────────── */
+footer {
+    visibility: hidden;
+}
