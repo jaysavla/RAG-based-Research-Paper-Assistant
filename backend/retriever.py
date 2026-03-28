@@ -4,8 +4,7 @@ import faiss
 import numpy as np
 import store
 from config import BGE_QUERY_PREFIX
-from indexer import rrf_merge
-from utils import tokenize
+from utils import rrf_merge, tokenize
 
 logger = logging.getLogger("rag")
 

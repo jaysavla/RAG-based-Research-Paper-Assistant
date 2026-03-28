@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 
 import store
 from retriever import faiss_only, faiss_then_rerank, hybrid_then_rerank
@@ -57,7 +58,7 @@ def run_evaluation(k: int) -> dict:
     details = []
 
     for item in store.EVAL_SET:
-        correct: int | None = next(
+        correct: Optional[int] = next(
             (
                 i
                 for i, c in enumerate(store.GLOBAL_CHUNK_MAP)
