@@ -1,13 +1,11 @@
 import io
 import re
-from typing import Dict, List
 
 import pdfplumber
-
 from config import CHUNK_OVERLAP, CHUNK_SIZE
 
 
-def extract_text_by_page(pdf_bytes: io.BytesIO) -> List[Dict]:
+def extract_text_by_page(pdf_bytes: io.BytesIO) -> list[dict]:
     pages = []
     with pdfplumber.open(pdf_bytes) as pdf:
         for i, page in enumerate(pdf.pages):
@@ -24,7 +22,7 @@ def clean_text(text: str) -> str:
         stripped = line.strip()
         if not stripped:
             continue
-        if re.fullmatch(r"\d+", stripped):   
+        if re.fullmatch(r"\d+", stripped):
             continue
         if cleaned and cleaned[-1].endswith("-"):
             cleaned[-1] = cleaned[-1][:-1] + stripped
@@ -35,7 +33,7 @@ def clean_text(text: str) -> str:
     return text
 
 
-def split_into_chunks(pages: List[Dict]) -> List[Dict]:
+def split_into_chunks(pages: list[dict]) -> list[dict]:
     sentence_pages = []
     for page_data in pages:
         text = clean_text(page_data["text"])
@@ -59,13 +57,15 @@ def split_into_chunks(pages: List[Dict]) -> List[Dict]:
             j += 1
 
         chunk_text = " ".join(chunk_sentences)
-        chunks.append({
-            "chunk_id":   chunk_id,
-            "text":       chunk_text,
-            "word_count": word_count,
-            "char_count": len(chunk_text),
-            "pages":      sorted(chunk_pages),
-        })
+        chunks.append(
+            {
+                "chunk_id": chunk_id,
+                "text": chunk_text,
+                "word_count": word_count,
+                "char_count": len(chunk_text),
+                "pages": sorted(chunk_pages),
+            }
+        )
         chunk_id += 1
 
         words_to_skip, skipped = max(1, word_count - CHUNK_OVERLAP), 0

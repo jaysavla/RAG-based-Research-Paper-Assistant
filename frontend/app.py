@@ -1,9 +1,7 @@
-import json
 import time
 
 import requests
 import streamlit as st
-
 from components import chunk_card, load_css
 
 BACKEND_URL = "http://127.0.0.1:8000"
@@ -39,9 +37,11 @@ with st.sidebar:
         accept_multiple_files=True,
         label_visibility="collapsed",
     )
-    overwrite   = st.checkbox("Overwrite existing uploads", value=False)
+    overwrite = st.checkbox("Overwrite existing uploads", value=False)
     process_btn = st.button(
-        "Process PDFs", type="primary", use_container_width=True,
+        "Process PDFs",
+        type="primary",
+        use_container_width=True,
         disabled=not uploaded_files,
     )
 
@@ -104,8 +104,8 @@ with st.sidebar:
                 continue
             with st.expander(f"📑 {fi['filename']}"):
                 c1, c2 = st.columns(2)
-                c1.metric("Pages",   fi["num_pages"])
-                c2.metric("Chunks",  fi.get("num_chunks", "—"))
+                c1.metric("Pages", fi["num_pages"])
+                c2.metric("Chunks", fi.get("num_chunks", "—"))
                 c1.metric("Vectors", fi.get("vectors_indexed", "—"))
                 c2.metric("Embed dim", fi.get("embed_dim", "—"))
                 for w in fi.get("warnings", []):
@@ -132,7 +132,8 @@ with tab_ask:
     question = st.text_area(
         "Your question",
         placeholder="e.g. What are the main contributions of these papers?",
-        height=80, key="ask_q",
+        height=80,
+        key="ask_q",
     )
     ask_btn = st.button("Ask AI", type="primary", key="ask_btn")
 
@@ -173,7 +174,7 @@ with tab_ask:
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_search:
     st.markdown("Returns the raw top-k chunks ranked by FAISS + BM25 + reranker — no LLM involved.")
-    search_q   = st.text_input("Search query", placeholder="e.g. attention mechanism", key="search_q")
+    search_q = st.text_input("Search query", placeholder="e.g. attention mechanism", key="search_q")
     search_btn = st.button("Search", type="primary", key="search_btn")
 
     if search_btn and search_q.strip():
@@ -213,16 +214,18 @@ with tab_chunks:
     st.markdown("Browse the first chunks of each uploaded document to verify extraction quality.")
 
     if st.session_state.upload_result:
-        files    = st.session_state.upload_result.get("files", [])
+        files = st.session_state.upload_result.get("files", [])
         doc_names = [fi["filename"] for fi in files if fi.get("status") != "skipped"]
 
         if doc_names:
-            selected  = st.selectbox("Select document", doc_names)
+            selected = st.selectbox("Select document", doc_names)
             preview_n = st.slider("Chunks to preview", 3, 20, 5)
             doc = next((fi for fi in files if fi["filename"] == selected), None)
 
             if doc:
-                st.caption(f"{doc.get('num_chunks', '?')} total chunks · {doc.get('num_pages', '?')} pages")
+                st.caption(
+                    f"{doc.get('num_chunks', '?')} total chunks · {doc.get('num_pages', '?')} pages"
+                )
                 for chunk in doc.get("chunks", [])[:preview_n]:
                     st.markdown(chunk_card(chunk), unsafe_allow_html=True)
         else:
@@ -235,15 +238,19 @@ with tab_chunks:
 # Tab 4 — Retrieval Evaluation
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_eval:
-    st.markdown("Generate a gold question set, then compare FAISS vs Re-ranking vs Hybrid retrieval.")
+    st.markdown(
+        "Generate a gold question set, then compare FAISS vs Re-ranking vs Hybrid retrieval."
+    )
 
     col_cfg1, col_cfg2 = st.columns(2)
-    num_questions = col_cfg1.number_input("Total questions to generate", min_value=2, max_value=30, value=5)
-    eval_k        = col_cfg2.slider("k for Recall@k / MRR", 1, 15, 5)
+    num_questions = col_cfg1.number_input(
+        "Total questions to generate", min_value=2, max_value=30, value=5
+    )
+    eval_k = col_cfg2.slider("k for Recall@k / MRR", 1, 15, 5)
 
     col_gen, col_run = st.columns(2)
     gen_btn = col_gen.button("Generate Eval Set", use_container_width=True)
-    run_btn = col_run.button("Run Evaluation",    use_container_width=True)
+    run_btn = col_run.button("Run Evaluation", use_container_width=True)
 
     if gen_btn:
         with st.spinner("Generating questions via GPT..."):
@@ -289,24 +296,36 @@ with tab_eval:
 
             st.markdown("**Recall@k**")
             c1, c2, c3 = st.columns(3)
-            c1.metric("FAISS",  edata["faiss_recall_at_k"])
-            c2.metric("Rerank", edata["rerank_recall_at_k"],
-                      delta=round(edata["rerank_recall_at_k"] - edata["faiss_recall_at_k"], 4))
-            c3.metric("Hybrid", edata["hybrid_recall_at_k"],
-                      delta=round(edata["hybrid_recall_at_k"] - edata["faiss_recall_at_k"], 4))
+            c1.metric("FAISS", edata["faiss_recall_at_k"])
+            c2.metric(
+                "Rerank",
+                edata["rerank_recall_at_k"],
+                delta=round(edata["rerank_recall_at_k"] - edata["faiss_recall_at_k"], 4),
+            )
+            c3.metric(
+                "Hybrid",
+                edata["hybrid_recall_at_k"],
+                delta=round(edata["hybrid_recall_at_k"] - edata["faiss_recall_at_k"], 4),
+            )
 
             st.markdown("**MRR**")
             c4, c5, c6 = st.columns(3)
-            c4.metric("FAISS",  edata["faiss_mrr"])
-            c5.metric("Rerank", edata["rerank_mrr"],
-                      delta=round(edata["rerank_mrr"] - edata["faiss_mrr"], 4))
-            c6.metric("Hybrid", edata["hybrid_mrr"],
-                      delta=round(edata["hybrid_mrr"] - edata["faiss_mrr"], 4))
+            c4.metric("FAISS", edata["faiss_mrr"])
+            c5.metric(
+                "Rerank",
+                edata["rerank_mrr"],
+                delta=round(edata["rerank_mrr"] - edata["faiss_mrr"], 4),
+            )
+            c6.metric(
+                "Hybrid",
+                edata["hybrid_mrr"],
+                delta=round(edata["hybrid_mrr"] - edata["faiss_mrr"], 4),
+            )
 
             st.divider()
             st.markdown("**Per-question breakdown**")
             for d in edata["details"]:
-                fi = "✅" if d["faiss_hit"]  else "❌"
+                fi = "✅" if d["faiss_hit"] else "❌"
                 ri = "✅" if d["rerank_hit"] else "❌"
                 hi = "✅" if d["hybrid_hit"] else "❌"
                 with st.expander(
@@ -315,6 +334,6 @@ with tab_eval:
                 ):
                     st.write(d["question"])
                     cols = st.columns(3)
-                    cols[0].metric("FAISS rank",  d["faiss_rank"]  or "—")
+                    cols[0].metric("FAISS rank", d["faiss_rank"] or "—")
                     cols[1].metric("Rerank rank", d["rerank_rank"] or "—")
                     cols[2].metric("Hybrid rank", d["hybrid_rank"] or "—")

@@ -14,7 +14,7 @@ def source_cards(sources: list) -> str:
             f'<div class="source-card">'
             f'  <span class="source-label">{s["label"]}</span>'
             f'  <div class="source-meta">📄 {s["filename"]} &nbsp;·&nbsp; pages {s["pages"]}</div>'
-            f'</div>'
+            f"</div>"
         )
     return f"<strong>Sources ({len(sources)}):</strong><br><br>{cards}"
 
@@ -26,10 +26,10 @@ def chunk_card(chunk: dict) -> str:
     return (
         f'<div class="chunk-card">'
         f'  <div class="chunk-meta">'
-        f'    Chunk {chunk["chunk_id"]} &nbsp;·&nbsp; '
-        f'    {chunk["word_count"]} words &nbsp;·&nbsp; '
-        f'    pages {chunk["pages"]}'
-        f'  </div>'
-        f'  {preview}'
-        f'</div>'
+        f"    Chunk {chunk['chunk_id']} &nbsp;·&nbsp; "
+        f"    {chunk['word_count']} words &nbsp;·&nbsp; "
+        f"    pages {chunk['pages']}"
+        f"  </div>"
+        f"  {preview}"
+        f"</div>"
     )

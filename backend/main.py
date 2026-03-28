@@ -14,7 +14,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-import store                                
+import store
 from config import BGE_QUERY_PREFIX
 from evaluator import generate_eval_set, run_evaluation
 from jobs import process_upload
@@ -30,6 +30,7 @@ app = FastAPI(title="RAG Research Assistant")
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
+
 @app.on_event("startup")
 def startup() -> None:
     load_store()
@@ -37,12 +38,14 @@ def startup() -> None:
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
+
 @app.get("/")
 def root():
     return {"status": "ok", "message": "RAG backend is running"}
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
+
 
 @app.post("/upload")
 async def upload_pdfs(
@@ -54,7 +57,7 @@ async def upload_pdfs(
 
     for file in files:
         content = await file.read()
-        error   = validate_file(content)
+        error = validate_file(content)
         if error:
             rejected.append({"filename": file.filename, "reason": error})
             logger.warning("Rejected '%s': %s", file.filename, error)
@@ -65,17 +68,22 @@ async def upload_pdfs(
         return {"error": "All files were rejected.", "rejected": rejected}
 
     store.JOBS[job_id] = {
-        "status": "processing", "progress": "Queued",
-        "files":  [f["filename"] for f in file_payloads],
-        "rejected": rejected, "result": None, "error": None,
+        "status": "processing",
+        "progress": "Queued",
+        "files": [f["filename"] for f in file_payloads],
+        "rejected": rejected,
+        "result": None,
+        "error": None,
     }
     background_tasks.add_task(process_upload, job_id, file_payloads, overwrite)
     logger.info("Job %s queued — %d valid, %d rejected", job_id, len(file_payloads), len(rejected))
 
     return {
-        "job_id": job_id, "status": "processing",
-        "files":  [f["filename"] for f in file_payloads],
-        "rejected": rejected, "poll_url": f"/upload/status/{job_id}",
+        "job_id": job_id,
+        "status": "processing",
+        "files": [f["filename"] for f in file_payloads],
+        "rejected": rejected,
+        "poll_url": f"/upload/status/{job_id}",
     }
 
 
@@ -85,12 +93,17 @@ def upload_status(job_id: str):
         return {"error": f"Job '{job_id}' not found."}
     job = store.JOBS[job_id]
     return {
-        "job_id": job_id, "status": job["status"], "progress": job["progress"],
-        "files":  job["files"],  "result": job["result"], "error": job["error"],
+        "job_id": job_id,
+        "status": job["status"],
+        "progress": job["progress"],
+        "files": job["files"],
+        "result": job["result"],
+        "error": job["error"],
     }
 
 
 # ── Query (raw chunks) ────────────────────────────────────────────────────────
+
 
 @app.post("/query")
 def query_documents(req: QueryRequest):
@@ -98,7 +111,9 @@ def query_documents(req: QueryRequest):
         return {"error": "No documents uploaded yet. Please upload PDFs first."}
 
     logger.info("QUERY top_k=%d — '%s'", req.top_k, req.query)
-    q_vec = store.EMBED_MODEL.encode([BGE_QUERY_PREFIX + req.query], show_progress_bar=False).astype(np.float32)
+    q_vec = store.EMBED_MODEL.encode(
+        [BGE_QUERY_PREFIX + req.query], show_progress_bar=False
+    ).astype(np.float32)
     faiss.normalize_L2(q_vec)
     scores, indices = store.GLOBAL_INDEX.search(q_vec, req.top_k)
 
@@ -107,20 +122,29 @@ def query_documents(req: QueryRequest):
         if idx == -1:
             continue
         chunk = store.GLOBAL_CHUNK_MAP[idx]
-        results.append({
-            "rank": rank + 1, "score": round(float(score), 4),
-            "filename": chunk["filename"], "chunk_id": chunk["chunk_id"],
-            "pages": chunk["pages"],       "text": chunk["text"],
-        })
+        results.append(
+            {
+                "rank": rank + 1,
+                "score": round(float(score), 4),
+                "filename": chunk["filename"],
+                "chunk_id": chunk["chunk_id"],
+                "pages": chunk["pages"],
+                "text": chunk["text"],
+            }
+        )
     return {"query": req.query, "top_k": req.top_k, "results": results}
 
+
 # ── Ask (streaming) ───────────────────────────────────────────────────────────
+
 
 @app.post("/ask/stream")
 def ask_stream(req: AskRequest):
     if store.GLOBAL_INDEX is None or store.GLOBAL_INDEX.ntotal == 0:
+
         def _err():
             yield "No documents uploaded yet. Please upload PDFs first."
+
         return StreamingResponse(_err(), media_type="text/plain")
 
     prompt, sources = retrieve_and_build_prompt(req.query, req.top_k)
@@ -143,6 +167,7 @@ def ask_stream(req: AskRequest):
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
+
 
 @app.post("/generate-eval-set")
 def generate_eval_set_endpoint(req: EvalGenRequest):

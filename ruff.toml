@@ -1,0 +1,17 @@
+line-length = 100
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes (undefined names, unused imports, etc.)
+    "I",   # isort (import order)
+    "UP",  # pyupgrade (modern Python idioms)
+]
+ignore = [
+    "E501",  # line too long — ruff format handles this
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["F401"]  # test files may import fixtures without explicit use
+"backend/main.py" = ["E402"]  # logging must be configured before local imports

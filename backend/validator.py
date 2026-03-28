@@ -1,9 +1,7 @@
-from typing import Optional
-
 from config import MAX_FILE_BYTES, MAX_FILE_MB, PDF_MAGIC
 
 
-def validate_file(content: bytes) -> Optional[str]:
+def validate_file(content: bytes) -> str | None:
     if len(content) == 0:
         return "File is empty (0 bytes)."
     if len(content) > MAX_FILE_BYTES:

@@ -1,12 +1,9 @@
-from typing import Dict, List
-
 import faiss
 import numpy as np
-
 import store
 
 
-def embed_chunks(chunks: List[Dict]) -> np.ndarray:
+def embed_chunks(chunks: list[dict]) -> np.ndarray:
     texts = [c["text"] for c in chunks]
     return store.EMBED_MODEL.encode(texts, show_progress_bar=False, batch_size=32)
 
