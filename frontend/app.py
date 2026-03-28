@@ -47,20 +47,25 @@ with st.sidebar:
 
     if process_btn and uploaded_files:
         files = [("files", (f.name, f.read(), "application/pdf")) for f in uploaded_files]
-        try:
-            resp = requests.post(
-                f"{BACKEND_URL}/upload",
-                files=files,
-                data={"overwrite": str(overwrite).lower()},
-            )
-            resp.raise_for_status()
-            job_data = resp.json()
-        except requests.exceptions.ConnectionError:
-            st.error("Cannot connect to backend on port 8000.")
-            st.stop()
-        except Exception as e:
-            st.error(f"Upload error: {e}")
-            st.stop()
+        with st.spinner(f"Uploading {len(uploaded_files)} file(s)..."):
+            try:
+                resp = requests.post(
+                    f"{BACKEND_URL}/upload",
+                    files=files,
+                    data={"overwrite": str(overwrite).lower()},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                job_data = resp.json()
+            except requests.exceptions.ConnectionError:
+                st.error("Cannot connect to backend on port 8000.")
+                st.stop()
+            except requests.exceptions.Timeout:
+                st.error("Upload timed out — backend may be overloaded or not running.")
+                st.stop()
+            except Exception as e:
+                st.error(f"Upload error: {e}")
+                st.stop()
 
         if "error" in job_data:
             st.error(job_data["error"])
@@ -71,6 +76,7 @@ with st.sidebar:
                 st.warning(f"Skipped **{r['filename']}**: {r['reason']}")
             st.session_state.job_id = job_data["job_id"]
             st.session_state.upload_result = None
+            st.rerun()  # force a fresh render cycle so polling starts cleanly
 
     # ── Poll upload job ───────────────────────────────────────────────────────
     if st.session_state.job_id and st.session_state.upload_result is None:
