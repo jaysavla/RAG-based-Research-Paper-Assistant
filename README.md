@@ -152,7 +152,6 @@ The built-in evaluation tab compares three retrieval strategies on a fixed quest
 | `POST` | `/upload` | Upload PDFs (async, returns job_id) |
 | `GET` | `/upload/status/{job_id}` | Poll upload job status |
 | `POST` | `/query` | Raw chunk search (no LLM) |
-| `POST` | `/ask` | Non-streaming answer |
 | `POST` | `/ask/stream` | Streaming answer |
 | `POST` | `/generate-eval-set` | Generate gold question set |
 | `POST` | `/evaluate` | Run Recall@k + MRR evaluation |

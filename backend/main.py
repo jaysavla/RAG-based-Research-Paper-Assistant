@@ -14,7 +14,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-import store                                    # noqa: E402  (models load here)
+import store                                
 from config import BGE_QUERY_PREFIX
 from evaluator import generate_eval_set, run_evaluation
 from jobs import process_upload
@@ -113,27 +113,6 @@ def query_documents(req: QueryRequest):
             "pages": chunk["pages"],       "text": chunk["text"],
         })
     return {"query": req.query, "top_k": req.top_k, "results": results}
-
-
-# ── Ask (non-streaming) ───────────────────────────────────────────────────────
-
-@app.post("/ask")
-def ask_documents(req: AskRequest):
-    if store.GLOBAL_INDEX is None or store.GLOBAL_INDEX.ntotal == 0:
-        return {"error": "No documents uploaded yet. Please upload PDFs first."}
-
-    prompt, sources = retrieve_and_build_prompt(req.query, req.top_k)
-    logger.info("ASK — '%s' | %d sources", req.query, len(sources))
-
-    response = store.openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-    )
-    answer = response.choices[0].message.content
-    logger.info("ASK — LLM response received (%d chars)", len(answer))
-    return {"query": req.query, "answer": answer, "sources": sources}
-
 
 # ── Ask (streaming) ───────────────────────────────────────────────────────────
 

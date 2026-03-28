@@ -8,10 +8,6 @@ logger = logging.getLogger("rag")
 
 
 def generate_eval_set(num_questions: int) -> List[Dict]:
-    """Sample chunks across all docs, ask GPT to generate one question per chunk.
-
-    num_questions is the total target — distributed evenly across documents.
-    """
     store.EVAL_SET.clear()
     session_store   = {k: v for k, v in store.DOCUMENT_STORE.items()
                        if k in store.SESSION_DOCS}

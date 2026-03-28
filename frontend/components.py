@@ -1,7 +1,3 @@
-"""
-Reusable HTML component builders for the Streamlit frontend.
-Each function returns an HTML string; call st.markdown(..., unsafe_allow_html=True).
-"""
 from pathlib import Path
 
 

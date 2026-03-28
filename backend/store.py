@@ -1,8 +1,3 @@
-"""
-Global application state and ML model singletons.
-All other modules import from here — never reassign these from outside,
-use store.VARIABLE = ... so the binding in this namespace is updated.
-"""
 import logging
 from typing import Dict, List, Optional, Set
 
